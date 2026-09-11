@@ -1,5 +1,14 @@
 # Trading Wiev — XAUUSD Bar Replay & Backtester
 
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Pandas](https://img.shields.io/badge/pandas-150458?logo=pandas&logoColor=white)](https://pandas.pydata.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-07405E?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
+[![KLineChart](https://img.shields.io/badge/KLineChart-10.0.3-26a69a)](https://klinecharts.com/)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+
 A local, self-hosted bar-replay and manual backtesting tool for XAUUSD (or any
 CSV-importable symbol), modeled on TradingView's Bar Replay: pick a past
 date, hide the future, step forward/back bar by bar, draw on the chart, and
@@ -9,6 +18,8 @@ No indicators, no automated strategies, no live broker connection, no user
 accounts — this is a single-user, single-process local tool.
 
 ![Trading Wiev screenshot](docs/screenshot.png)
+
+Built by [AnonimTM1](https://github.com/AnonimTM1).
 
 ## Quick start
 
