@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+dist/
+frontend/dist/
+data/
+!data/.gitkeep
+*.db
+*.parquet
+.DS_Store
+*.egg-info/
+.coverage

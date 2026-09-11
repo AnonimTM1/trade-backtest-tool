@@ -1,0 +1,1 @@
+{"root":["./src/api.ts","./src/main.ts","./src/types.ts","./src/chart/chart.ts","./src/drawings/drawings.ts","./src/replay/replay.ts","./src/trading/trading.ts","./src/ui/app.ts"],"version":"5.9.3"}
