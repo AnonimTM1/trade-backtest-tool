@@ -6,6 +6,7 @@ from typing import Literal, Optional
 
 Side = Literal["buy", "sell"]
 CloseReason = Literal["manual", "sl", "tp"]
+OrderType = Literal["limit", "stop"]
 
 
 @dataclass
@@ -27,6 +28,18 @@ class EnginePosition:
     open_time: datetime
     contract_size: float
     point_size: float
+    sl: Optional[float] = None
+    tp: Optional[float] = None
+
+
+@dataclass
+class EnginePendingOrder:
+    id: str
+    side: Side
+    order_type: OrderType
+    price: float
+    lots: float
+    created_time: datetime
     sl: Optional[float] = None
     tp: Optional[float] = None
 

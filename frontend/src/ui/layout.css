@@ -90,7 +90,7 @@ select {
 
 .app-grid {
   display: grid;
-  grid-template-columns: 44px 1fr 220px;
+  grid-template-columns: 44px 1fr 250px;
   grid-template-rows: 48px 1fr 220px;
   grid-template-areas:
     "topbar topbar topbar"
@@ -379,4 +379,138 @@ table.data-table tr:hover td {
 }
 .toast.error {
   border-color: var(--red);
+}
+
+/* ---- additions: replay controls, order panel, menus ---- */
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn.toggled {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.btn.play {
+  font-size: 15px;
+}
+.topbar {
+  overflow-x: auto;
+  overflow-y: visible;
+}
+.topbar select {
+  height: 28px;
+}
+.topbar .cursor-time {
+  min-width: 150px;
+  text-align: center;
+  color: var(--text-0);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+.topbar .speed-info {
+  color: var(--text-1);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.grow {
+  flex: 1;
+}
+.dropdown {
+  position: relative;
+}
+.dropdown-menu {
+  display: none;
+  position: fixed;
+  margin-top: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  z-index: 500;
+  min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.dropdown.open .dropdown-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dropdown-menu label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dropdown-menu label:hover {
+  background: var(--bg-3);
+}
+.toolbar select.magnet {
+  width: 38px;
+  font-size: 11px;
+  padding: 0;
+}
+.chart-area .scroll-latest {
+  position: absolute;
+  right: 70px;
+  bottom: 34px;
+  z-index: 10;
+  opacity: 0.7;
+}
+.chart-area .scroll-latest:hover {
+  opacity: 1;
+}
+.field-row {
+  display: flex;
+  gap: 8px;
+}
+.field-row .field {
+  flex: 1;
+  min-width: 0;
+}
+.field select {
+  width: 100%;
+}
+.bidask .spread {
+  color: var(--text-1);
+  font-size: 11px;
+}
+.risk-info {
+  color: var(--text-1);
+  font-size: 11px;
+  min-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.orders-panel .hint {
+  color: var(--text-1);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.subhead {
+  color: var(--text-1);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 10px 0 4px;
+}
+.session-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.session-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid #1c2029;
+}
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 6px 0;
 }

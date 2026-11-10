@@ -2,8 +2,11 @@ import type {
   Candle,
   DownloadJob,
   DrawingRecord,
+  OrderType,
+  PendingOrderInfo,
   PositionInfo,
   SessionInfo,
+  SessionState,
   StatsResponse,
   StepResponse,
   SymbolConfig,
@@ -74,24 +77,41 @@ export const api = {
       `/sessions/${id}/bars?tf=${tf}&limit=${limit}${before ? `&before=${before}` : ""}`
     ),
 
-  step: (id: string, tf: Timeframe, n = 1) =>
-    req<StepResponse>(`/sessions/${id}/step`, { method: "POST", body: JSON.stringify({ tf, n }) }),
+  state: (id: string) => req<SessionState>(`/sessions/${id}/state`),
+  step: (id: string, tf: Timeframe, n: number, displayTf: Timeframe) =>
+    req<StepResponse>(`/sessions/${id}/step`, {
+      method: "POST",
+      body: JSON.stringify({ tf, n, display_tf: displayTf }),
+    }),
   stepBack: (id: string, tf: Timeframe, n = 1) =>
-    req<{ cursor_time: string; candles: Candle[] }>(`/sessions/${id}/step_back`, {
+    req<SessionState>(`/sessions/${id}/step_back`, {
       method: "POST",
       body: JSON.stringify({ tf, n }),
     }),
   jump: (id: string, timestamp: string, force = false) =>
-    req<{ cursor_time: string }>(`/sessions/${id}/jump`, {
+    req<SessionState>(`/sessions/${id}/jump`, {
       method: "POST",
       body: JSON.stringify({ timestamp, force }),
     }),
 
-  placeOrder: (id: string, side: "buy" | "sell", lots: number, sl?: number | null, tp?: number | null) =>
-    req<PositionInfo>(`/sessions/${id}/orders`, {
+  placeOrder: (
+    id: string,
+    side: "buy" | "sell",
+    lots: number,
+    sl: number | null,
+    tp: number | null,
+    orderType: OrderType = "market",
+    price: number | null = null
+  ) =>
+    req<PositionInfo | PendingOrderInfo>(`/sessions/${id}/orders`, {
       method: "POST",
-      body: JSON.stringify({ side, lots, sl: sl ?? null, tp: tp ?? null }),
+      body: JSON.stringify({ side, lots, sl, tp, order_type: orderType, price }),
     }),
+  listOrders: (id: string) => req<PendingOrderInfo[]>(`/sessions/${id}/orders`),
+  updateOrder: (id: string, orderId: string, patch: { price?: number; sl?: number | null; tp?: number | null; clear_sl?: boolean; clear_tp?: boolean }) =>
+    req<PendingOrderInfo>(`/sessions/${id}/orders/${orderId}`, { method: "PUT", body: JSON.stringify(patch) }),
+  cancelOrder: (id: string, orderId: string) =>
+    req<PendingOrderInfo>(`/sessions/${id}/orders/${orderId}`, { method: "DELETE" }),
   listPositions: (id: string) => req<PositionInfo[]>(`/sessions/${id}/positions`),
   updatePosition: (id: string, positionId: string, patch: { sl?: number | null; tp?: number | null; clear_sl?: boolean; clear_tp?: boolean }) =>
     req<PositionInfo>(`/sessions/${id}/positions/${positionId}`, { method: "PUT", body: JSON.stringify(patch) }),

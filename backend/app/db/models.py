@@ -56,6 +56,23 @@ class Position(Base):
     status: Mapped[str] = mapped_column(String, default="open")  # open | closed
 
 
+class PendingOrder(Base):
+    __tablename__ = "pending_orders"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(String, ForeignKey("sessions.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String)
+    side: Mapped[str] = mapped_column(String)  # buy | sell
+    order_type: Mapped[str] = mapped_column(String)  # limit | stop
+    price: Mapped[float] = mapped_column(Float)
+    lots: Mapped[float] = mapped_column(Float)
+    sl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_time: Mapped[datetime] = mapped_column(DateTime)  # replay (cursor) time it was placed
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending | filled | cancelled
+    position_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class Trade(Base):
     __tablename__ = "trades"
 

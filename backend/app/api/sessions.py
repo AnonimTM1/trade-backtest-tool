@@ -13,6 +13,7 @@ from app.api import sessions_service
 from app.api.schemas import (
     JumpRequest,
     OrderRequest,
+    OrderUpdate,
     PositionUpdate,
     SessionCreate,
     SessionOut,
@@ -20,7 +21,7 @@ from app.api.schemas import (
 )
 from app.data import resample
 from app.db.database import get_db
-from app.db.models import ReplaySession, Trade
+from app.db.models import PendingOrder, Position, ReplaySession, Trade
 from app.engine.stats import compute_stats
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -33,8 +34,9 @@ def _get_session_or_404(db: DbSession, session_id: str) -> ReplaySession:
     return session
 
 
-def _session_out(db: DbSession, session: ReplaySession) -> SessionOut:
-    equity, open_rows = sessions_service.session_equity(db, session)
+def _session_out(db: DbSession, session: ReplaySession, ctx=None) -> SessionOut:
+    ctx = ctx or sessions_service.cursor_context(db, session)
+    equity, open_rows = sessions_service.session_equity(db, session, ctx)
     return SessionOut(
         id=session.id,
         name=session.name,
@@ -47,7 +49,23 @@ def _session_out(db: DbSession, session: ReplaySession) -> SessionOut:
         has_open_positions=len(open_rows) > 0,
         created_at=session.created_at,
         updated_at=session.updated_at,
+        quote=ctx.quote(),
     )
+
+
+def _state(db: DbSession, session: ReplaySession) -> dict:
+    """Everything the trading UI shows, in one round trip."""
+    ctx = sessions_service.cursor_context(db, session)
+    open_rows = sessions_service.get_open_positions(db, session.id)
+    equity, _ = sessions_service.session_equity(db, session, ctx, open_rows)
+    return {
+        "cursor_time": session.cursor_time,
+        "balance": session.balance,
+        "equity": equity,
+        "quote": ctx.quote(),
+        "positions": [sessions_service.position_to_out(db, session, r, ctx) for r in open_rows],
+        "orders": [sessions_service.order_to_out(o) for o in sessions_service.get_pending_orders(db, session.id)],
+    }
 
 
 @router.post("", response_model=SessionOut)
@@ -68,13 +86,18 @@ def get_session(session_id: str, db: DbSession = Depends(get_db)):
     return _session_out(db, session)
 
 
+@router.get("/{session_id}/state")
+def get_state(session_id: str, db: DbSession = Depends(get_db)):
+    session = _get_session_or_404(db, session_id)
+    return _state(db, session)
+
+
 @router.delete("/{session_id}")
 def delete_session(session_id: str, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
     db.query(Trade).filter(Trade.session_id == session_id).delete()
-    from app.db.models import Position
-
     db.query(Position).filter(Position.session_id == session_id).delete()
+    db.query(PendingOrder).filter(PendingOrder.session_id == session_id).delete()
     db.delete(session)
     db.commit()
     return {"ok": True}
@@ -84,10 +107,11 @@ def delete_session(session_id: str, db: DbSession = Depends(get_db)):
 def get_session_bars(
     session_id: str,
     tf: str = Query("M1"),
-    limit: int = Query(500, le=5000),
+    limit: int = Query(500, ge=1, le=5000),
     before: int | None = Query(None),
     db: DbSession = Depends(get_db),
 ):
+    sessions_service.validate_tf(tf)
     session = _get_session_or_404(db, session_id)
     cfg = sessions_service.get_or_create_symbol_config(db, session.symbol)
     before_ts = pd.Timestamp(before, unit="ms") if before is not None else None
@@ -96,24 +120,34 @@ def get_session_bars(
     return {"symbol": session.symbol, "tf": tf, "cursor_time": session.cursor_time, "candles": sessions_service.df_to_candles(df)}
 
 
+def _event_out(db, session, ev: dict, ctx) -> dict:
+    if ev["type"] == "closed":
+        return {"type": "closed", "trade": _trade_to_dict(ev["trade"])}
+    return {
+        "type": "filled",
+        "order": sessions_service.order_to_out(ev["order"]),
+        "position": sessions_service.position_to_out(db, session, ev["position"], ctx),
+    }
+
+
 @router.post("/{session_id}/step")
 def step(session_id: str, body: StepRequest, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
+    display_tf = sessions_service.validate_tf(body.display_tf or body.tf)
     result = sessions_service.step_forward(db, session, body.tf, body.n)
     cfg = sessions_service.get_or_create_symbol_config(db, session.symbol)
     cursor_ts = pd.Timestamp(session.cursor_time)
-    df = resample.get_bars_upto_cursor(session.symbol, body.tf, cursor=cursor_ts, tz=cfg.timezone, limit=2)
-    open_rows = sessions_service.get_open_positions(db, session.id)
-    equity, _ = sessions_service.session_equity(db, session)
+    df = resample.bars_since(
+        session.symbol, display_tf, result["previous_cursor"], cursor_ts, tz=cfg.timezone,
+        max_bars=sessions_service.MAX_STEP_CANDLES,
+    )
+    state = _state(db, session)
+    ctx = sessions_service.cursor_context(db, session)
     return {
-        "cursor_time": session.cursor_time,
+        **state,
+        "display_tf": display_tf,
         "candles": sessions_service.df_to_candles(df),
-        "events": [
-            {"type": "closed", "trade": _trade_to_dict(t)} for t in result["events"]
-        ],
-        "positions": [sessions_service.position_to_out(db, session, r) for r in open_rows],
-        "balance": session.balance,
-        "equity": equity,
+        "events": [_event_out(db, session, e, ctx) for e in result["events"]],
         "end_of_data": result["end_of_data"],
     }
 
@@ -122,31 +156,51 @@ def step(session_id: str, body: StepRequest, db: DbSession = Depends(get_db)):
 def step_back(session_id: str, body: StepRequest, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
     sessions_service.step_back(db, session, body.tf, body.n)
-    cfg = sessions_service.get_or_create_symbol_config(db, session.symbol)
-    cursor_ts = pd.Timestamp(session.cursor_time)
-    df = resample.get_bars_upto_cursor(session.symbol, body.tf, cursor=cursor_ts, tz=cfg.timezone, limit=2)
-    return {"cursor_time": session.cursor_time, "candles": sessions_service.df_to_candles(df)}
+    return _state(db, session)
 
 
 @router.post("/{session_id}/jump")
 def jump(session_id: str, body: JumpRequest, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
     sessions_service.jump(db, session, body.timestamp, body.force)
-    return {"cursor_time": session.cursor_time}
+    return _state(db, session)
 
 
 @router.post("/{session_id}/orders")
 def place_order(session_id: str, body: OrderRequest, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
-    row = sessions_service.place_market_order(db, session, body.side, body.lots, body.sl, body.tp)
-    return sessions_service.position_to_out(db, session, row)
+    row = sessions_service.place_order(db, session, body.side, body.lots, body.sl, body.tp, body.order_type, body.price)
+    if body.order_type == "market":
+        return sessions_service.position_to_out(db, session, row)
+    return sessions_service.order_to_out(row)
+
+
+@router.get("/{session_id}/orders")
+def list_orders(session_id: str, db: DbSession = Depends(get_db)):
+    session = _get_session_or_404(db, session_id)
+    return [sessions_service.order_to_out(o) for o in sessions_service.get_pending_orders(db, session.id)]
+
+
+@router.put("/{session_id}/orders/{order_id}")
+def update_order(session_id: str, order_id: str, body: OrderUpdate, db: DbSession = Depends(get_db)):
+    session = _get_session_or_404(db, session_id)
+    row = sessions_service.modify_order(db, session, order_id, body.price, body.sl, body.tp, body.clear_sl, body.clear_tp)
+    return sessions_service.order_to_out(row)
+
+
+@router.delete("/{session_id}/orders/{order_id}")
+def cancel_order(session_id: str, order_id: str, db: DbSession = Depends(get_db)):
+    session = _get_session_or_404(db, session_id)
+    row = sessions_service.cancel_order(db, session, order_id)
+    return sessions_service.order_to_out(row)
 
 
 @router.get("/{session_id}/positions")
 def list_positions(session_id: str, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
     rows = sessions_service.get_open_positions(db, session.id)
-    return [sessions_service.position_to_out(db, session, r) for r in rows]
+    ctx = sessions_service.cursor_context(db, session)
+    return [sessions_service.position_to_out(db, session, r, ctx) for r in rows]
 
 
 @router.put("/{session_id}/positions/{position_id}")
@@ -170,41 +224,29 @@ def close_all(session_id: str, db: DbSession = Depends(get_db)):
     return [_trade_to_dict(t) for t in trades]
 
 
+def _session_trades(db: DbSession, session: ReplaySession) -> list[Trade]:
+    return list(
+        db.execute(select(Trade).where(Trade.session_id == session.id).order_by(Trade.close_time)).scalars().all()
+    )
+
+
 @router.get("/{session_id}/trades")
 def list_trades(session_id: str, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
-    rows = db.execute(
-        select(Trade).where(Trade.session_id == session.id).order_by(Trade.close_time)
-    ).scalars().all()
-    return [_trade_to_dict(r) for r in rows]
+    return [_trade_to_dict(r) for r in _session_trades(db, session)]
 
 
 @router.get("/{session_id}/stats")
 def get_stats(session_id: str, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
-    rows = db.execute(
-        select(Trade).where(Trade.session_id == session.id).order_by(Trade.close_time)
-    ).scalars().all()
-    stats = compute_stats(rows, session.starting_balance)
-    return {
-        "total_trades": stats.total_trades,
-        "win_rate": stats.win_rate,
-        "net_pnl": stats.net_pnl,
-        "profit_factor": stats.profit_factor,
-        "avg_win": stats.avg_win,
-        "avg_loss": stats.avg_loss,
-        "avg_r": stats.avg_r,
-        "max_drawdown": stats.max_drawdown,
-        "equity_curve": stats.equity_curve,
-    }
+    stats = compute_stats(_session_trades(db, session), session.starting_balance)
+    return dict(stats.__dict__)
 
 
 @router.get("/{session_id}/trades/export.csv")
 def export_trades_csv(session_id: str, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
-    rows = db.execute(
-        select(Trade).where(Trade.session_id == session.id).order_by(Trade.close_time)
-    ).scalars().all()
+    rows = _session_trades(db, session)
 
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -221,9 +263,9 @@ def export_trades_csv(session_id: str, db: DbSession = Depends(get_db)):
 
 def _trade_to_dict(t) -> dict:
     return {
-        "id": t.id if hasattr(t, "id") else None,
+        "id": getattr(t, "id", None),
         "position_id": t.position_id,
-        "symbol": t.symbol if hasattr(t, "symbol") else None,
+        "symbol": getattr(t, "symbol", None),
         "side": t.side,
         "lots": t.lots,
         "open_price": t.open_price,

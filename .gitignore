@@ -6,10 +6,11 @@ venv/
 node_modules/
 dist/
 frontend/dist/
-data/
-!data/.gitkeep
+/data/
+!/data/.gitkeep
 *.db
 *.parquet
 .DS_Store
 *.egg-info/
 .coverage
+*.tsbuildinfo

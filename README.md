@@ -85,46 +85,77 @@ into `./data/raw/`, ready to import from the app's Import screen.
 
 ## Replay controls
 
-- Step forward / step back one bar of the currently displayed timeframe
-- Play / pause with a speed selector (1, 2, 5, 10, 20 bars/sec)
-- Jump to a specific date (relocates the cursor; asks for confirmation if
-  positions are open, since fills are not simulated across a skipped range)
+- Step forward / step back one bar, play / pause
+- Speed selector from 1x to 300x steps per second. Above ~25 steps/s, steps
+  are batched into one request so the effective speed still matches, and
+  each tick waits for the previous one, so playback never stutters or skips
+  updates
+- **Step resolution**: by default one step equals one bar of the chart's
+  timeframe (like TradingView). Choose e.g. *Step: M1* while viewing H1 to
+  watch the H1 candle form minute by minute
+- Gaps in the data (weekends, daily breaks, missing minutes) are skipped
+  automatically, so playback doesn't stall
+- The chart follows the newest bar while it's in view; if you scroll back
+  into history it stays put (⇥ / `End` returns to the latest bar)
+- Jump to a specific date (asks for confirmation if positions or pending
+  orders are open, since fills are not simulated across a skipped range)
+- Indicators (MA, EMA, Bollinger, Parabolic SAR, Volume, MACD, RSI, KDJ).
+  They are computed only from the bars up to the cursor, so they never peek
+  at future data
+- Timeframe, speed, step resolution, indicators, lot size and risk % are
+  remembered between visits
 
 **Keyboard shortcuts:**
 
-| Key            | Action        |
-| -------------- | ------------- |
-| `Shift + →`    | Step forward  |
-| `Shift + ←`    | Step back     |
-| `Space`        | Play / pause  |
-| `Alt + B`      | Market buy    |
-| `Alt + S`      | Market sell   |
+| Key            | Action                    |
+| -------------- | ------------------------- |
+| `Shift + →`    | Step forward              |
+| `Shift + ←`    | Step back                 |
+| `Space`        | Play / pause              |
+| `+` / `-`      | Faster / slower           |
+| `1` … `7`      | M1, M5, M15, M30, H1, H4, D1 |
+| `End`          | Scroll to latest bar      |
+| `Esc`          | Cancel drawing tool       |
+| `Alt + B`      | Buy                       |
+| `Alt + S`      | Sell                      |
+| `Alt + X`      | Close all positions       |
 
-Step back moves the cursor for viewing only — it does not undo executed
-trades — and is disabled while any position is open.
+Step back only moves the cursor for viewing. It does not undo executed
+trades, and it is disabled while any position is open.
 
 ## Trading simulation
 
-- Market buy/sell with lot size and optional SL/TP, multiple simultaneous
-  positions.
+- Market, **limit** and **stop** orders with lot size and optional SL/TP,
+  multiple simultaneous positions.
+- **Risk %** sizing: enter a risk % and an SL and the lot size is computed so
+  that hitting the SL loses that % of the balance. The panel shows risk,
+  reward and R:R before you place the order.
 - Bars are BID prices (MT5 convention): `ask = bid + spread`. A long enters
   at ask / exits at bid; a short enters at bid / exits at ask. Per-bar spread
   from the data is used when present, otherwise the symbol's configured
   default.
 - Market orders fill at the close of the cursor's M1 bar, spread applied.
+- SL/TP on the wrong side of the market (e.g. a buy SL above the bid) are
+  rejected, like MT5's "invalid stops".
 - SL/TP are checked against every M1 bar crossed during a step, on the
   correct bid/ask side for the position's direction. If both are touched
   within the same bar, SL is assumed hit first. If a bar opens beyond SL/TP
   (a gap), the fill is at the open price, not the SL/TP level.
-- Drag SL/TP lines directly on the chart, or edit them from the position
-  panel; close individual positions or all at once.
+- Pending orders trigger on the side they execute on (buy orders on the ask,
+  sell orders on the bid). A limit order fills at its price, or at the open
+  if the bar gaps through it. A stop order fills at its price, or at the gap
+  open (slippage). A position opened by a pending order is checked for SL/TP
+  from the next M1 bar.
+- Drag SL/TP lines and pending-order lines directly on the chart; close
+  positions, cancel orders individually, or close all at once.
 
 ## Statistics
 
-Total trades, win rate, net P/L, profit factor, average win/loss, average R
-(for trades with an SL set), max drawdown on closed-trade equity, and an
-equity curve — all in the Statistics tab, with trade history exportable to
-CSV.
+Total trades, win rate, net P/L, return %, profit factor, expectancy,
+average win/loss, largest win/loss, average R (for trades with an SL set),
+max drawdown (absolute and %), longest win/loss streaks, long vs. short
+breakdown, and an equity curve, all in the Statistics tab. Trade history is
+exportable to CSV.
 
 ## Development
 
@@ -162,8 +193,14 @@ Dockerfile, docker-compose.yml                       single service on :8000
 Ambiguities in the spec were resolved as follows, simplest-reasonable-option
 first:
 
-- **New-symbol defaults**: point size 0.01, contract size 100, default
-  spread 20 points, timezone UTC — all editable per-symbol afterward.
+- **New-symbol defaults**: well-known instruments (XAUUSD, XAGUSD, FX
+  majors, USDJPY, BTCUSD, ETHUSD) get broker-like presets for point size,
+  contract size and spread. Anything else gets point size 0.01, contract
+  size 100, spread 20 points. Timezone is UTC. All of these can be edited
+  per symbol from the ⚙ settings dialog.
+- **Chart time**: timestamps are naive broker time and the chart renders
+  them in UTC, so a bar's label matches the data no matter what the
+  browser's local timezone is.
 - **D1 boundary & timezone**: imported timestamps are treated as naive
   "broker time". For D1 resampling, that time is interpreted in the
   symbol's configured timezone to align daily boundaries to local midnight;
@@ -215,12 +252,6 @@ first:
   frontend declares small structural-equivalent local types instead of
   importing them.
 
-## Known limitations (MVP)
+## Known limitations
 
-- Hide-all/lock-all for drawings mutate overlay objects returned by
-  KLineChart directly (no separate "update overlay" API is exposed by the
-  library); this works but hasn't been exercised outside this environment's
-  automated checks, since no GUI browser was available to click through it
-  interactively here — sanity-check it after `docker compose up`.
-- Phase 2 items from the spec (pending limit/stop orders, partial close,
-  long/short position drawing tool) are intentionally not built.
+- Partial close and the long/short position drawing tool are not built yet.

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SymbolConfigOut(BaseModel):
@@ -73,11 +73,13 @@ class SessionOut(BaseModel):
     has_open_positions: bool = False
     created_at: datetime
     updated_at: datetime
+    quote: Optional[dict] = None
 
 
 class StepRequest(BaseModel):
-    tf: str = "M1"
-    n: int = 1
+    tf: str = "M1"  # step resolution: how far one step moves the cursor
+    n: int = Field(1, ge=1, le=100000)
+    display_tf: Optional[str] = None  # timeframe of the candles returned (defaults to tf)
 
 
 class JumpRequest(BaseModel):
@@ -90,6 +92,16 @@ class OrderRequest(BaseModel):
     lots: float
     sl: Optional[float] = None
     tp: Optional[float] = None
+    order_type: Literal["market", "limit", "stop"] = "market"
+    price: Optional[float] = None  # required for limit/stop
+
+
+class OrderUpdate(BaseModel):
+    price: Optional[float] = None
+    sl: Optional[float] = None
+    tp: Optional[float] = None
+    clear_sl: bool = False
+    clear_tp: bool = False
 
 
 class PositionUpdate(BaseModel):

@@ -1,0 +1,31 @@
+# Fast rebuild for slow networks: reuses an already-built image that has all
+# Python dependencies installed and only swaps in the new code.
+#   docker tag trading-wiev-app:latest trading-wiev-base:deps   (once)
+#   docker build -f Dockerfile.fast -t trading-wiev-app:latest .
+# Use the regular Dockerfile whenever backend/requirements.txt changes.
+
+FROM node:20-alpine AS frontend-build
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/index.html frontend/tsconfig.json frontend/vite.config.ts ./
+COPY frontend/src ./src
+RUN npm run build
+
+FROM trading-wiev-base:deps AS runtime
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DATA_DIR=/app/data
+
+RUN rm -rf /app/app
+COPY backend/app ./app
+COPY --from=frontend-build /frontend/dist ./app/static
+RUN mkdir -p /app/data/raw /app/data/parquet
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

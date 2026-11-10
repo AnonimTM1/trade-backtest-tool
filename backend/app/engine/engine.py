@@ -10,6 +10,12 @@ Fill rules implemented:
     first.
   - If the bar opens beyond SL or TP (a gap), the position fills at the open
     price (on the relevant bid/ask side) instead of at the SL/TP level.
+  - Pending orders trigger on the side they would execute on: buy orders on
+    the ask (bar + spread), sell orders on the bid. Limit orders fill at their
+    price, or at the open if the bar gaps through it (price improvement);
+    stop orders fill at their price, or at the open if it gaps through
+    (slippage). A position opened by a pending order is checked for SL/TP
+    from the next M1 bar onward.
 """
 from __future__ import annotations
 
@@ -17,7 +23,7 @@ import uuid
 from typing import Optional
 
 from app.engine import pricing
-from app.engine.models import Bar, ClosedTrade, EnginePosition, Side
+from app.engine.models import Bar, ClosedTrade, EnginePendingOrder, EnginePosition, Side
 
 
 def open_market_position(
@@ -133,3 +139,89 @@ def _close(position: EnginePosition, fill_price: float, close_time, reason) -> C
 def floating_pnl(position: EnginePosition, current_bid: float, spread_points: float) -> float:
     exit_price = pricing.exit_price_for_close(position.side, current_bid, spread_points, position.point_size)
     return pricing.pnl(position.side, position.open_price, exit_price, position.lots, position.contract_size)
+
+
+class InvalidStopsError(ValueError):
+    pass
+
+
+def validate_stops(side: Side, reference_price: float, sl: Optional[float], tp: Optional[float]) -> None:
+    """Reject SL/TP on the wrong side of the price the position would be
+    closed against (bid for longs, ask for shorts), like MT5's 'invalid
+    stops'. Without this an inverted SL/TP closes the trade on the very next
+    bar, which is never what the user meant."""
+    if side == "buy":
+        if sl is not None and sl >= reference_price:
+            raise InvalidStopsError(f"Buy stop loss must be below {reference_price:g}")
+        if tp is not None and tp <= reference_price:
+            raise InvalidStopsError(f"Buy take profit must be above {reference_price:g}")
+    else:
+        if sl is not None and sl <= reference_price:
+            raise InvalidStopsError(f"Sell stop loss must be above {reference_price:g}")
+        if tp is not None and tp >= reference_price:
+            raise InvalidStopsError(f"Sell take profit must be below {reference_price:g}")
+
+
+def validate_pending_price(side: Side, order_type: str, price: float, bid: float, ask: float) -> None:
+    """Limit orders must be better than market, stop orders worse."""
+    market = ask if side == "buy" else bid
+    if price <= 0:
+        raise InvalidStopsError("Order price must be positive")
+    if side == "buy":
+        if order_type == "limit" and price >= market:
+            raise InvalidStopsError(f"Buy limit must be below the ask ({market:g}); use a buy stop instead")
+        if order_type == "stop" and price <= market:
+            raise InvalidStopsError(f"Buy stop must be above the ask ({market:g}); use a buy limit instead")
+    else:
+        if order_type == "limit" and price <= market:
+            raise InvalidStopsError(f"Sell limit must be above the bid ({market:g}); use a sell stop instead")
+        if order_type == "stop" and price >= market:
+            raise InvalidStopsError(f"Sell stop must be below the bid ({market:g}); use a sell limit instead")
+
+
+def check_pending_trigger(order: EnginePendingOrder, bar: Bar, spread_points: float, point_size: float) -> Optional[float]:
+    """Return the fill price if `order` triggers during `bar`, else None."""
+    if bar.timestamp <= order.created_time:
+        return None
+    if order.side == "buy":
+        spread_val = pricing.spread_price(spread_points, point_size)
+        o, h, l = bar.open + spread_val, bar.high + spread_val, bar.low + spread_val
+    else:
+        o, h, l = bar.open, bar.high, bar.low
+    p = order.price
+    if order.side == "buy" and order.order_type == "limit":
+        if o <= p:
+            return o
+        return p if l <= p else None
+    if order.side == "buy" and order.order_type == "stop":
+        if o >= p:
+            return o
+        return p if h >= p else None
+    if order.side == "sell" and order.order_type == "limit":
+        if o >= p:
+            return o
+        return p if h >= p else None
+    # sell stop
+    if o <= p:
+        return o
+    return p if l <= p else None
+
+
+def fill_pending_order(
+    order: EnginePendingOrder,
+    fill_price: float,
+    fill_time,
+    contract_size: float,
+    point_size: float,
+) -> EnginePosition:
+    return EnginePosition(
+        id=uuid.uuid4().hex,
+        side=order.side,
+        lots=order.lots,
+        open_price=fill_price,
+        open_time=fill_time,
+        contract_size=contract_size,
+        point_size=point_size,
+        sl=order.sl,
+        tp=order.tp,
+    )

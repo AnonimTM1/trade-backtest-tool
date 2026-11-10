@@ -1,26 +1,35 @@
 import { api } from "../api";
 import type { ChartController } from "../chart/chart";
-import type { PositionInfo, SessionInfo, StepResponse, Timeframe, TradeInfo } from "../types";
+import { TF_MINUTES, type SessionInfo, type SessionState, type StepEvent, type Timeframe } from "../types";
+import { sleep } from "../util";
 
 export interface ReplayCallbacks {
-  onCursorChange: (cursorTime: string) => void;
-  onAccountChange: (balance: number, equity: number, positions: PositionInfo[]) => void;
-  onTradesClosed: (trades: TradeInfo[]) => void;
+  onState: (state: SessionState) => void;
+  onEvents: (events: StepEvent[]) => void;
   onEndOfData: () => void;
   onError: (message: string) => void;
+  onPlayingChange: (playing: boolean) => void;
 }
 
-const SPEEDS = [1, 2, 5, 10, 20];
+/** Replay speeds in steps per second. */
+export const SPEEDS = [1, 2, 3, 5, 10, 20, 30, 60, 120, 300];
+
+/** Never fire step requests faster than this; above it, steps are batched
+ * (n > 1 per request) so the effective bars/sec still matches the speed. */
+const MIN_TICK_MS = 40;
+
+/** "auto" = step by the chart's own timeframe (TradingView default). */
+export type StepResolution = Timeframe | "auto";
 
 export class ReplayController {
   session: SessionInfo;
-  tf: Timeframe = "M1";
+  stepRes: StepResolution = "auto";
   private chart: ChartController;
   private cb: ReplayCallbacks;
   private playing = false;
   private speedIdx = 0;
-  private timer: number | null = null;
-  private stepping = false;
+  private loopGen = 0;
+  private inflight: Promise<unknown> | null = null;
 
   constructor(session: SessionInfo, chart: ChartController, cb: ReplayCallbacks) {
     this.session = session;
@@ -32,79 +41,104 @@ export class ReplayController {
     return SPEEDS[this.speedIdx];
   }
 
+  setSpeedIndex(i: number) {
+    this.speedIdx = Math.max(0, Math.min(SPEEDS.length - 1, i));
+  }
+
+  get speedIndex(): number {
+    return this.speedIdx;
+  }
+
   get isPlaying(): boolean {
     return this.playing;
   }
 
-  async setTimeframe(tf: Timeframe) {
-    this.tf = tf;
-    await this.chart.setTimeframe(tf);
+  get tf(): Timeframe {
+    return this.chart.timeframe;
   }
 
-  cycleSpeed() {
-    this.speedIdx = (this.speedIdx + 1) % SPEEDS.length;
-    if (this.playing) this._restartTimer();
+  /** Resolution a single step advances by. Never coarser-than-chart is
+   * enforced: stepping by H1 while viewing M1 is allowed (fast-forward). */
+  get stepTf(): Timeframe {
+    return this.stepRes === "auto" ? this.tf : this.stepRes;
   }
 
-  async stepForward(n = 1) {
-    if (this.stepping) return;
-    this.stepping = true;
+  /** Serialise everything that moves the cursor or reloads the series, so a
+   * late step response can never be applied on top of a freshly reloaded
+   * chart (which caused duplicated/missing candles). */
+  private async exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    while (this.inflight) await this.inflight.catch(() => {});
+    const p = fn();
+    this.inflight = p;
     try {
-      const resp: StepResponse = await api.step(this.session.id, this.tf, n);
-      this.session.cursor_time = resp.cursor_time;
-      this.session.balance = resp.balance;
-      for (const c of resp.candles) this.chart.pushBar(c);
-      this.chart.scrollToRealTime();
-      this.cb.onCursorChange(resp.cursor_time);
-      this.cb.onAccountChange(resp.balance, resp.equity, resp.positions);
-      const closedTrades = resp.events.filter((e) => e.type === "closed").map((e) => e.trade);
-      if (closedTrades.length) this.cb.onTradesClosed(closedTrades);
-      if (resp.end_of_data) {
-        this.pause();
-        this.cb.onEndOfData();
-      }
-    } catch (e) {
-      this.pause();
-      this.cb.onError((e as Error).message);
+      return await p;
     } finally {
-      this.stepping = false;
+      if (this.inflight === p) this.inflight = null;
     }
+  }
+
+  async setTimeframe(tf: Timeframe) {
+    await this.exclusive(() => this.chart.setTimeframe(tf));
+  }
+
+  async stepForward(n = 1): Promise<boolean> {
+    return this.exclusive(async () => {
+      const epoch = this.chart.epoch;
+      try {
+        const resp = await api.step(this.session.id, this.stepTf, n, this.tf);
+        this.session.cursor_time = resp.cursor_time;
+        this.session.balance = resp.balance;
+        if (resp.display_tf === this.tf) this.chart.pushBars(resp.candles, epoch);
+        this.cb.onState(resp);
+        if (resp.events.length) this.cb.onEvents(resp.events);
+        if (resp.end_of_data) {
+          this.pause();
+          this.cb.onEndOfData();
+          return false;
+        }
+        return true;
+      } catch (e) {
+        this.pause();
+        this.cb.onError((e as Error).message);
+        return false;
+      }
+    });
   }
 
   async stepBack(n = 1) {
-    if (this.stepping) return;
-    this.stepping = true;
-    try {
-      const resp = await api.stepBack(this.session.id, this.tf, n);
-      this.session.cursor_time = resp.cursor_time;
-      this.chart.reset();
-      this.cb.onCursorChange(resp.cursor_time);
-    } catch (e) {
-      this.cb.onError((e as Error).message);
-    } finally {
-      this.stepping = false;
-    }
+    await this.exclusive(async () => {
+      try {
+        const state = await api.stepBack(this.session.id, this.stepTf, n);
+        this.session.cursor_time = state.cursor_time;
+        this.chart.reset();
+        this.cb.onState(state);
+      } catch (e) {
+        this.cb.onError((e as Error).message);
+      }
+    });
   }
 
   async jump(timestamp: string, force = false) {
-    const resp = await api.jump(this.session.id, timestamp, force);
-    this.session.cursor_time = resp.cursor_time;
-    this.chart.reset();
-    this.cb.onCursorChange(resp.cursor_time);
+    await this.exclusive(async () => {
+      const state = await api.jump(this.session.id, timestamp, force);
+      this.session.cursor_time = state.cursor_time;
+      this.chart.reset();
+      this.cb.onState(state);
+    });
   }
 
   play() {
     if (this.playing) return;
     this.playing = true;
-    this._restartTimer();
+    this.cb.onPlayingChange(true);
+    void this._loop(++this.loopGen);
   }
 
   pause() {
+    if (!this.playing) return;
     this.playing = false;
-    if (this.timer !== null) {
-      window.clearInterval(this.timer);
-      this.timer = null;
-    }
+    this.loopGen++;
+    this.cb.onPlayingChange(false);
   }
 
   toggle() {
@@ -112,11 +146,29 @@ export class ReplayController {
     else this.play();
   }
 
-  private _restartTimer() {
-    if (this.timer !== null) window.clearInterval(this.timer);
-    const intervalMs = 1000 / this.speed;
-    this.timer = window.setInterval(() => {
-      void this.stepForward(1);
-    }, intervalMs);
+  /** Self-scheduling playback loop. Unlike a fixed setInterval (which
+   * silently dropped ticks whenever a request was still in flight, making
+   * playback stutter), each tick waits for the previous response and then
+   * sleeps only for the remainder of the tick, batching steps when the
+   * requested speed is faster than one request per MIN_TICK_MS. */
+  private async _loop(gen: number) {
+    while (this.playing && gen === this.loopGen) {
+      const started = performance.now();
+      const interval = 1000 / this.speed;
+      const tick = Math.max(interval, MIN_TICK_MS);
+      const n = Math.max(1, Math.round(tick / interval));
+      const ok = await this.stepForward(n);
+      if (!ok || !this.playing || gen !== this.loopGen) break;
+      const elapsed = performance.now() - started;
+      await sleep(Math.max(0, tick - elapsed));
+    }
+  }
+
+  /** Human label for the current speed, e.g. "10/s · M1". */
+  speedLabel(): string {
+    const s = this.speed;
+    const minutes = TF_MINUTES[this.stepTf] * s;
+    const sim = minutes >= 60 ? `${+(minutes / 60).toFixed(1)}h` : `${minutes}m`;
+    return `${s}x (${sim}/s)`;
   }
 }

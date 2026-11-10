@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session as DbSession
 
@@ -38,6 +41,17 @@ def list_symbols(db: DbSession = Depends(get_db)):
 
 @router.put("/{symbol}", response_model=SymbolConfigOut)
 def update_symbol_config(symbol: str, body: SymbolConfigUpdate, db: DbSession = Depends(get_db)):
+    for field_name in ("point_size", "contract_size"):
+        value = getattr(body, field_name)
+        if value is not None and value <= 0:
+            raise HTTPException(400, f"{field_name} must be positive")
+    if body.default_spread_points is not None and body.default_spread_points < 0:
+        raise HTTPException(400, "default_spread_points cannot be negative")
+    if body.timezone is not None:
+        try:
+            ZoneInfo(body.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise HTTPException(400, f"Unknown timezone {body.timezone!r}") from e
     cfg = sessions_service.get_or_create_symbol_config(db, symbol)
     if body.point_size is not None:
         cfg.point_size = body.point_size
@@ -67,15 +81,12 @@ def update_symbol_config(symbol: str, body: SymbolConfigUpdate, db: DbSession = 
 def get_symbol_bars(
     symbol: str,
     tf: str = Query("M1"),
-    limit: int = Query(500, le=5000),
+    limit: int = Query(500, ge=1, le=5000),
     before: int | None = Query(None, description="unix ms; return bars strictly before this timestamp"),
     db: DbSession = Depends(get_db),
 ):
+    sessions_service.validate_tf(tf)
     cfg = sessions_service.get_or_create_symbol_config(db, symbol)
-    before_ts = None
-    if before is not None:
-        import pandas as pd
-
-        before_ts = pd.Timestamp(before, unit="ms")
+    before_ts = pd.Timestamp(before, unit="ms") if before is not None else None
     df = resample.get_bars_upto_cursor(symbol, tf, cursor=None, tz=cfg.timezone, before=before_ts, limit=limit)
     return {"symbol": symbol.upper(), "tf": tf, "candles": sessions_service.df_to_candles(df)}

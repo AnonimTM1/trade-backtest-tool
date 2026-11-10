@@ -1,5 +1,17 @@
 export type Timeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1";
 
+export const TIMEFRAMES: Timeframe[] = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+
+export const TF_MINUTES: Record<Timeframe, number> = {
+  M1: 1,
+  M5: 5,
+  M15: 15,
+  M30: 30,
+  H1: 60,
+  H4: 240,
+  D1: 1440,
+};
+
 export interface Candle {
   timestamp: number; // unix ms
   open: number;
@@ -20,6 +32,13 @@ export interface SymbolConfig {
   last_bar: string | null;
 }
 
+export interface Quote {
+  time: string;
+  bid: number;
+  ask: number;
+  spread_points: number;
+}
+
 export interface SessionInfo {
   id: string;
   name: string;
@@ -32,6 +51,7 @@ export interface SessionInfo {
   has_open_positions: boolean;
   created_at: string;
   updated_at: string;
+  quote: Quote | null;
 }
 
 export interface PositionInfo {
@@ -45,6 +65,23 @@ export interface PositionInfo {
   tp: number | null;
   current_price: number | null;
   floating_pnl: number | null;
+}
+
+export type PendingType = "limit" | "stop";
+export type OrderType = "market" | PendingType;
+
+export interface PendingOrderInfo {
+  id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  order_type: PendingType;
+  price: number;
+  lots: number;
+  sl: number | null;
+  tp: number | null;
+  created_time: string;
+  status: "pending" | "filled" | "cancelled";
+  position_id: string | null;
 }
 
 export interface TradeInfo {
@@ -63,13 +100,23 @@ export interface TradeInfo {
   close_reason: "manual" | "sl" | "tp";
 }
 
-export interface StepResponse {
+export interface SessionState {
   cursor_time: string;
-  candles: Candle[];
-  events: { type: string; trade: TradeInfo }[];
-  positions: PositionInfo[];
   balance: number;
   equity: number;
+  quote: Quote | null;
+  positions: PositionInfo[];
+  orders: PendingOrderInfo[];
+}
+
+export type StepEvent =
+  | { type: "closed"; trade: TradeInfo }
+  | { type: "filled"; order: PendingOrderInfo; position: PositionInfo };
+
+export interface StepResponse extends SessionState {
+  display_tf: Timeframe;
+  candles: Candle[];
+  events: StepEvent[];
   end_of_data: boolean;
 }
 
@@ -83,6 +130,17 @@ export interface StatsResponse {
   avg_r: number | null;
   max_drawdown: number;
   equity_curve: { time: string | null; equity: number }[];
+  expectancy: number;
+  largest_win: number;
+  largest_loss: number;
+  max_consecutive_wins: number;
+  max_consecutive_losses: number;
+  return_pct: number;
+  max_drawdown_pct: number;
+  long_trades: number;
+  short_trades: number;
+  long_win_rate: number;
+  short_win_rate: number;
 }
 
 export interface DownloadJob {

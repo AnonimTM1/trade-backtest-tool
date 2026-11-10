@@ -28,6 +28,17 @@ class Stats:
     avg_r: Optional[float]
     max_drawdown: float
     equity_curve: list[dict]
+    expectancy: float = 0.0
+    largest_win: float = 0.0
+    largest_loss: float = 0.0
+    max_consecutive_wins: int = 0
+    max_consecutive_losses: int = 0
+    return_pct: float = 0.0
+    max_drawdown_pct: float = 0.0
+    long_trades: int = 0
+    short_trades: int = 0
+    long_win_rate: float = 0.0
+    short_win_rate: float = 0.0
 
 
 def compute_stats(trades: list[TradeLike], starting_balance: float) -> Stats:
@@ -63,11 +74,30 @@ def compute_stats(trades: list[TradeLike], starting_balance: float) -> Stats:
     equity_curve = [{"time": None, "equity": equity}]
     peak = equity
     max_dd = 0.0
+    max_dd_pct = 0.0
     for t in trades:
         equity += t.pnl
         equity_curve.append({"time": t.close_time.isoformat(), "equity": equity})
         peak = max(peak, equity)
         max_dd = max(max_dd, peak - equity)
+        if peak > 0:
+            max_dd_pct = max(max_dd_pct, (peak - equity) / peak * 100.0)
+
+    max_w = max_l = cur_w = cur_l = 0
+    for t in trades:
+        if t.pnl > 0:
+            cur_w, cur_l = cur_w + 1, 0
+        elif t.pnl < 0:
+            cur_w, cur_l = 0, cur_l + 1
+        else:
+            cur_w = cur_l = 0
+        max_w, max_l = max(max_w, cur_w), max(max_l, cur_l)
+
+    longs = [t for t in trades if t.side == "buy"]
+    shorts = [t for t in trades if t.side == "sell"]
+
+    def _wr(group) -> float:
+        return (sum(1 for t in group if t.pnl > 0) / len(group) * 100.0) if group else 0.0
 
     return Stats(
         total_trades=total,
@@ -79,4 +109,15 @@ def compute_stats(trades: list[TradeLike], starting_balance: float) -> Stats:
         avg_r=avg_r,
         max_drawdown=max_dd,
         equity_curve=equity_curve,
+        expectancy=net_pnl / total,
+        largest_win=max((t.pnl for t in wins), default=0.0),
+        largest_loss=min((t.pnl for t in losses), default=0.0),
+        max_consecutive_wins=max_w,
+        max_consecutive_losses=max_l,
+        return_pct=(net_pnl / starting_balance * 100.0) if starting_balance else 0.0,
+        max_drawdown_pct=max_dd_pct,
+        long_trades=len(longs),
+        short_trades=len(shorts),
+        long_win_rate=_wr(longs),
+        short_win_rate=_wr(shorts),
     )
