@@ -56,6 +56,15 @@ export async function openImportModal(onClose: () => void | Promise<void>) {
         <div class="actions">
           <button class="btn" data-r="upload">Upload &amp; Import</button>
         </div>
+        <div class="sep" style="height:1px;background:var(--border);margin:6px 0"></div>
+        <div class="field">
+          <label>Economic calendar (ForexFactory CSV export, replaces the current one)</label>
+          <input type="file" accept=".csv" data-r="newsfile" />
+        </div>
+        <div class="empty-hint" style="text-align:left;padding:0" data-r="newsstatus">Checking calendar…</div>
+        <div class="actions">
+          <button class="btn" data-r="newsupload">Upload calendar</button>
+        </div>
       </div>
 
       <div class="actions">
@@ -108,6 +117,32 @@ export async function openImportModal(onClose: () => void | Promise<void>) {
   });
 
   wireDownloadPane(backdrop);
+
+  const newsStatusEl = backdrop.querySelector('[data-r="newsstatus"]') as HTMLElement;
+  const showNewsStatus = () =>
+    api
+      .newsStatus()
+      .then((st) => {
+        newsStatusEl.textContent = st.loaded
+          ? `Calendar loaded: ${st.count.toLocaleString()} events, ${st.first?.slice(0, 10)} → ${st.last?.slice(0, 10)} (source time: ${st.source_timezone})`
+          : "No calendar loaded yet.";
+      })
+      .catch((e) => (newsStatusEl.textContent = "Calendar error: " + (e as Error).message));
+  void showNewsStatus();
+  backdrop.querySelector('[data-r="newsupload"]')!.addEventListener("click", async () => {
+    const input = backdrop.querySelector('[data-r="newsfile"]') as HTMLInputElement;
+    if (!input.files?.length) {
+      newsStatusEl.textContent = "Choose a calendar CSV first";
+      return;
+    }
+    newsStatusEl.textContent = "Uploading…";
+    try {
+      await api.uploadNews(input.files[0]);
+      await showNewsStatus();
+    } catch (e) {
+      newsStatusEl.textContent = "Error: " + (e as Error).message;
+    }
+  });
 
   backdrop.querySelector('[data-r="close"]')!.addEventListener("click", async () => {
     document.body.removeChild(backdrop);

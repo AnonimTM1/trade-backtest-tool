@@ -89,6 +89,21 @@ const DARK_STYLES = {
   indicator: {
     tooltip: { showRule: "always" },
   },
+  overlay: {
+    point: {
+      color: "#2962ff",
+      borderColor: "rgba(41,98,255,0.35)",
+      borderSize: 1,
+      radius: 4,
+      activeColor: "#2962ff",
+      activeBorderColor: "rgba(41,98,255,0.35)",
+      activeBorderSize: 3,
+      activeRadius: 5,
+    },
+    line: { color: "#2962ff", size: 1 },
+    polygon: { color: "rgba(41,98,255,0.15)", borderColor: "#2962ff" },
+    text: { color: "#d1d4dc", backgroundColor: "transparent", borderSize: 0, borderColor: "transparent", paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1 },
+  },
   xAxis: { axisLine: { color: "#2a2e39" }, tickText: { color: "#8a8e98" } },
   yAxis: { axisLine: { color: "#2a2e39" }, tickText: { color: "#8a8e98" } },
   separator: { color: "#2a2e39" },
@@ -141,7 +156,7 @@ export class ChartController {
           .then((candles) => {
             const data = candles.map(toKLineData);
             callback(data, { forward: data.length >= PAGE, backward: false });
-            if (type === "init") this.onSeriesReloaded?.();
+            this.onSeriesReloaded?.(); // initial load and older-history pages
           })
           .catch(() => callback([], { forward: false, backward: false }));
       },
@@ -170,7 +185,7 @@ export class ChartController {
     this.fetcher = fetcher;
   }
 
-  /** Called after every full series (re)load, e.g. to re-anchor overlays. */
+  /** Called after the series is (re)loaded and after older history pages load. */
   setOnSeriesReloaded(cb: () => void) {
     this.onSeriesReloaded = cb;
   }

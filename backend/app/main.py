@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
-from app.api import drawings, import_, sessions, symbols
+from app.api import drawings, import_, news, sessions, symbols
 from app.db.database import init_db
 
 app = FastAPI(title="Trading Wiev — Bar Replay Backtester")
@@ -17,6 +17,7 @@ app.include_router(symbols.router)
 app.include_router(import_.router)
 app.include_router(sessions.router)
 app.include_router(drawings.router)
+app.include_router(news.router)
 
 
 @app.get("/api/health")

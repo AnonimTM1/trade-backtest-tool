@@ -13,8 +13,11 @@ import type {
   TradeInfo,
 } from "../types";
 import { decimalsOf, fmtTime, naiveToMs, prefs, toast } from "../util";
+import type { TradeMarkerData } from "../drawings/overlays";
+import type { TradeLineData, TradeLineKind } from "./tradeLine";
+import "./tradeLine";
 
-type LineKind = "entry" | "sl" | "tp" | "pending";
+type LineEntry = { id: string; value: number; sig: string; timestamp: number };
 
 const COLORS = {
   entry: "#8a8e98",
@@ -30,7 +33,10 @@ export class TradingPanel {
   private symbolCfg: SymbolConfig;
   private chart: ChartController;
   private onAfterOrderChange: () => void;
-  private overlayIds = new Map<string, { id: string; value: number }>(); // `${ownerId}:${kind}`
+  private overlayIds = new Map<string, LineEntry>(); // `${ownerId}:${kind}`
+  /** Side the order ticket's SL/TP preview refers to (set by the bracket
+   * buttons; otherwise inferred from where the SL/TP sit). */
+  private ticketSide: "buy" | "sell" | null = null;
   private quote: Quote | null = null;
   private balance = 0;
   private positions: PositionInfo[] = [];
@@ -134,13 +140,21 @@ export class TradingPanel {
         <label>Take Profit (blank = none)</label>
         <input type="number" step="any" data-r="tp" />
       </div>
+      <div class="bracket">
+        <button class="btn" data-r="longbr" title="Place a long SL/TP on the chart, then drag the lines">▲ Long SL/TP</button>
+        <button class="btn" data-r="shortbr" title="Place a short SL/TP on the chart, then drag the lines">▼ Short SL/TP</button>
+        <button class="btn" data-r="clearbr" title="Clear SL/TP">✕</button>
+      </div>
       <div class="risk-info" data-r="riskinfo"></div>
       <div class="buysell">
         <button class="btn-sell" data-r="sell"><span data-r="selllabel">SELL</span><span class="px" data-r="sellpx">-</span></button>
         <button class="btn-buy" data-r="buy"><span data-r="buylabel">BUY</span><span class="px" data-r="buypx">-</span></button>
       </div>
       <button class="btn" data-r="closeall">Close All Positions</button>
-      <div class="hint">Alt+B buy · Alt+S sell · Alt+X close all<br/>Drag SL/TP and pending lines on the chart</div>
+      <div class="hint">Alt+B buy · Alt+S sell · Alt+X close all<br/>
+        Drag SL/TP lines (or their labels) on the chart. Drag a position's
+        entry line up/down to add a TP or SL. Values can also be typed in the
+        positions table.</div>
     `;
     const q = <T extends HTMLElement>(r: string) => root.querySelector(`[data-r="${r}"]`) as T;
     this.typeSelect = q("type");
@@ -163,6 +177,14 @@ export class TradingPanel {
     this.buyBtn.addEventListener("click", () => void this.placeOrder("buy"));
     this.sellBtn.addEventListener("click", () => void this.placeOrder("sell"));
     q("closeall").addEventListener("click", () => void this.closeAll());
+    q("longbr").addEventListener("click", () => this._placeBracket("buy"));
+    q("shortbr").addEventListener("click", () => this._placeBracket("sell"));
+    q("clearbr").addEventListener("click", () => {
+      this.slInput.value = "";
+      this.tpInput.value = "";
+      this.ticketSide = null;
+      this._updateRiskInfo();
+    });
     this.typeSelect.addEventListener("change", () => {
       const t = this.typeSelect.value as OrderType;
       this.priceField.style.display = t === "market" ? "none" : "";
@@ -171,6 +193,11 @@ export class TradingPanel {
       (q("selllabel") as HTMLElement).textContent = t === "market" ? "SELL" : `SELL ${t.toUpperCase()}`;
       this._updateRiskInfo();
     });
+    for (const el of [this.slInput, this.tpInput]) {
+      el.addEventListener("input", () => {
+        if (!this.slInput.value && !this.tpInput.value) this.ticketSide = null;
+      });
+    }
     for (const el of [this.priceInput, this.slInput, this.tpInput, this.riskInput, this.lotsInput]) {
       el.addEventListener("input", () => {
         prefs.set("lots", this.lotsInput.value);
@@ -263,16 +290,53 @@ export class TradingPanel {
     return Math.max(0.01, lots);
   }
 
+  /** Side the ticket's SL/TP refer to: explicit (bracket buttons) or inferred
+   * from where the SL/TP sit relative to the entry. */
+  private _ticketSide(): "buy" | "sell" | null {
+    if (this.ticketSide) return this.ticketSide;
+    const sl = this._num(this.slInput);
+    const tp = this._num(this.tpInput);
+    const ref = this._entryEstimate("buy") ?? this.quote?.bid ?? null;
+    if (ref === null || (sl === null && tp === null)) return null;
+    return sl !== null ? (sl < ref ? "buy" : "sell") : tp! > ref ? "buy" : "sell";
+  }
+
+  /** Typical SL distance: 1.5x the average range of the last 14 chart bars,
+   * at least 10x the spread. */
+  private _defaultDistance(): number {
+    const data = this.chart.instance.getDataList();
+    const recent = data.slice(-14);
+    const avgRange = recent.length ? recent.reduce((a, b) => a + (b.high - b.low), 0) / recent.length : 0;
+    const spread = (this.quote?.spread_points ?? this.symbolCfg.default_spread_points) * this.symbolCfg.point_size;
+    const dist = Math.max(avgRange * 1.5, spread * 10, this.symbolCfg.point_size * 20);
+    return parseFloat(dist.toFixed(this.dp));
+  }
+
+  private _placeBracket(side: "buy" | "sell") {
+    const entry = this._entryEstimate(side);
+    if (entry === null) {
+      toast(this.typeSelect.value === "market" ? "No price at the cursor yet" : "Enter the order price first", true);
+      return;
+    }
+    const dist = this._defaultDistance();
+    const dir = side === "buy" ? 1 : -1;
+    this.ticketSide = side;
+    this.slInput.value = (entry - dir * dist).toFixed(this.dp);
+    this.tpInput.value = (entry + dir * dist * 2).toFixed(this.dp);
+    this._updateRiskInfo();
+  }
+
   private _updateRiskInfo() {
     const sl = this._num(this.slInput);
     const tp = this._num(this.tpInput);
-    // Infer the side from where SL sits relative to the entry.
     const ref = this._entryEstimate("buy") ?? this.quote?.bid ?? null;
-    if (ref === null || (sl === null && tp === null)) {
+    const inferred = this._ticketSide();
+    if (ref === null || (sl === null && tp === null) || inferred === null) {
       this.riskInfoEl.textContent = "";
+      this._syncPreview();
       return;
     }
-    const side: "buy" | "sell" = sl !== null ? (sl < ref ? "buy" : "sell") : tp! > ref ? "buy" : "sell";
+    const side: "buy" | "sell" = inferred;
     const entry = this._entryEstimate(side) ?? ref;
     const riskLots = this._riskLots(side);
     if (riskLots !== null) this.lotsInput.value = riskLots.toFixed(2);
@@ -292,6 +356,7 @@ export class TradingPanel {
       parts.push(`R:R 1:${(Math.abs(tp - entry) / Math.abs(entry - sl)).toFixed(2)}`);
     }
     this.riskInfoEl.textContent = `${side === "buy" ? "Long" : "Short"} · ${parts.join(" · ")}`;
+    this._syncPreview();
   }
 
   async placeOrder(side: "buy" | "sell") {
@@ -316,6 +381,7 @@ export class TradingPanel {
       }
       this.slInput.value = "";
       this.tpInput.value = "";
+      this.ticketSide = null;
       this._updateRiskInfo();
       this.onAfterOrderChange();
     } catch (e) {
@@ -378,8 +444,8 @@ export class TradingPanel {
                   <td>${p.lots}</td>
                   <td>${fmtTime(p.open_time)}</td>
                   <td>${p.open_price.toFixed(dp)}</td>
-                  <td>${p.sl?.toFixed(dp) ?? "-"}</td>
-                  <td>${p.tp?.toFixed(dp) ?? "-"}</td>
+                  <td>${this._cellInput(`pos:${p.id}:sl`, p.sl)}</td>
+                  <td>${this._cellInput(`pos:${p.id}:tp`, p.tp)}</td>
                   <td data-c="cur"></td>
                   <td data-c="pnl"></td>
                   <td class="row-actions"><button class="btn" data-close="${p.id}">Close</button></td>
@@ -398,9 +464,9 @@ export class TradingPanel {
                   <td class="side-${o.side}">${o.side.toUpperCase()} ${o.order_type.toUpperCase()}</td>
                   <td>${o.lots}</td>
                   <td>${fmtTime(o.created_time)}</td>
-                  <td>${o.price.toFixed(dp)}</td>
-                  <td>${o.sl?.toFixed(dp) ?? "-"}</td>
-                  <td>${o.tp?.toFixed(dp) ?? "-"}</td>
+                  <td>${this._cellInput(`ord:${o.id}:price`, o.price)}</td>
+                  <td>${this._cellInput(`ord:${o.id}:sl`, o.sl)}</td>
+                  <td>${this._cellInput(`ord:${o.id}:tp`, o.tp)}</td>
                   <td class="row-actions"><button class="btn" data-cancel="${o.id}">Cancel</button></td>
                 </tr>`
               )
@@ -414,6 +480,16 @@ export class TradingPanel {
       el.querySelectorAll<HTMLButtonElement>("[data-cancel]").forEach((btn) =>
         btn.addEventListener("click", () => void this._cancelOrder(btn.dataset.cancel!))
       );
+      el.querySelectorAll<HTMLInputElement>("input[data-edit]").forEach((inp) => {
+        inp.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") inp.blur();
+          if (e.key === "Escape") {
+            inp.value = inp.defaultValue;
+            inp.blur();
+          }
+        });
+        inp.addEventListener("change", () => void this._commitCell(inp));
+      });
     }
     for (const p of this.positions) {
       const row = el.querySelector(`tr[data-id="${p.id}"]`);
@@ -424,6 +500,33 @@ export class TradingPanel {
       pnl.textContent = p.floating_pnl?.toFixed(2) ?? "-";
       pnl.className = (p.floating_pnl ?? 0) >= 0 ? "pnl-pos" : "pnl-neg";
     }
+  }
+
+  private _cellInput(key: string, value: number | null): string {
+    const v = value === null ? "" : value.toFixed(this.dp);
+    return `<input class="cell-input" type="number" step="any" data-edit="${key}" value="${v}" placeholder="—" />`;
+  }
+
+  /** Manual SL/TP/price edit from the tables. Empty clears SL/TP. */
+  private async _commitCell(inp: HTMLInputElement) {
+    const [scope, id, field] = inp.dataset.edit!.split(":");
+    const raw = inp.value.trim();
+    const value = raw === "" ? null : parseFloat(raw);
+    if (value !== null && !isFinite(value)) return;
+    try {
+      const patch: { price?: number; sl?: number; tp?: number; clear_sl?: boolean; clear_tp?: boolean } =
+        value === null ? (field === "sl" ? { clear_sl: true } : { clear_tp: true }) : { [field]: value };
+      if (scope === "pos") {
+        await api.updatePosition(this.session.id, id, patch);
+      } else {
+        if (field === "price" && value === null) throw new Error("A pending order needs a price");
+        await api.updateOrder(this.session.id, id, patch);
+      }
+    } catch (e) {
+      toast((e as Error).message, true);
+      inp.value = inp.defaultValue;
+    }
+    this.onAfterOrderChange();
   }
 
   /** Forces a full rebuild next render (container element was replaced). */
@@ -526,27 +629,120 @@ export class TradingPanel {
     }
   }
 
+  private _data(
+    kind: TradeLineKind,
+    side: "buy" | "sell",
+    entry: number,
+    lots: number,
+    title: string,
+    extra: Partial<TradeLineData> = {}
+  ): TradeLineData {
+    const color =
+      kind === "sl" || kind === "preview-sl"
+        ? COLORS.sl
+        : kind === "tp" || kind === "preview-tp"
+        ? COLORS.tp
+        : kind === "entry"
+        ? COLORS[side]
+        : COLORS.pending;
+    return {
+      kind,
+      color,
+      dashed: kind !== "sl" && kind !== "tp",
+      title,
+      side,
+      entry,
+      lots,
+      contract: this.symbolCfg.contract_size,
+      point: this.symbolCfg.point_size,
+      dp: this.dp,
+      ...extra,
+    };
+  }
+
   private _syncOverlays() {
     const wanted = new Set<string>();
     for (const p of this.positions) {
       const t = naiveToMs(p.open_time);
-      this._upsertLine(p.id, "entry", p.open_price, t, wanted, `${p.side.toUpperCase()} ${p.lots}`);
-      if (p.sl !== null) this._upsertLine(p.id, "sl", p.sl, t, wanted, "SL", (v) => this._movePosition(p.id, "sl", v));
-      if (p.tp !== null) this._upsertLine(p.id, "tp", p.tp, t, wanted, "TP", (v) => this._movePosition(p.id, "tp", v));
+      const L = (k: TradeLineKind, title: string, extra?: Partial<TradeLineData>) =>
+        this._data(k, p.side, p.open_price, p.lots, title, extra);
+      const missing = p.sl === null || p.tp === null;
+      this._upsertLine(
+        p.id, "entry", p.open_price, t, wanted,
+        L("entry", `${p.side.toUpperCase()} ${p.lots}`, { floating: p.floating_pnl, hint: missing ? "↕" : undefined }),
+        (v) => this._entryDragged(p, v)
+      );
+      if (p.sl !== null) this._upsertLine(p.id, "sl", p.sl, t, wanted, L("sl", "SL"), (v) => this._movePosition(p.id, "sl", v));
+      if (p.tp !== null) this._upsertLine(p.id, "tp", p.tp, t, wanted, L("tp", "TP"), (v) => this._movePosition(p.id, "tp", v));
     }
     for (const o of this.orders) {
       const t = naiveToMs(o.created_time);
-      const label = `${o.side.toUpperCase()} ${o.order_type.toUpperCase()} ${o.lots}`;
-      this._upsertLine(o.id, "pending", o.price, t, wanted, label, (v) => this._moveOrder(o.id, { price: v }));
-      if (o.sl !== null) this._upsertLine(o.id, "sl", o.sl, t, wanted, "SL", (v) => this._moveOrder(o.id, { sl: v }));
-      if (o.tp !== null) this._upsertLine(o.id, "tp", o.tp, t, wanted, "TP", (v) => this._moveOrder(o.id, { tp: v }));
+      const L = (k: TradeLineKind, title: string) => this._data(k, o.side, o.price, o.lots, title);
+      this._upsertLine(
+        o.id, "pending", o.price, t, wanted,
+        L("pending", `${o.side.toUpperCase()} ${o.order_type.toUpperCase()} ${o.lots}`),
+        (v) => this._moveOrder(o.id, { price: v })
+      );
+      if (o.sl !== null) this._upsertLine(o.id, "sl", o.sl, t, wanted, L("sl", "SL"), (v) => this._moveOrder(o.id, { sl: v }));
+      if (o.tp !== null) this._upsertLine(o.id, "tp", o.tp, t, wanted, L("tp", "TP"), (v) => this._moveOrder(o.id, { tp: v }));
     }
+    this._removeUnwanted(wanted, (key) => !key.startsWith("ticket:"));
+  }
+
+  /** Draggable preview lines for the order ticket's price / SL / TP. */
+  private _syncPreview() {
+    const wanted = new Set<string>();
+    const side = this._ticketSide();
+    const type = this.typeSelect.value as OrderType;
+    const price = type === "market" ? null : this._num(this.priceInput);
+    const sl = this._num(this.slInput);
+    const tp = this._num(this.tpInput);
+    const t = naiveToMs(this.session.cursor_time);
+    const lots = this._num(this.lotsInput) ?? 0;
+    if (price !== null) {
+      this._upsertLine(
+        "ticket", "preview-price", price, t, wanted,
+        this._data("preview-price", side ?? "buy", price, lots, `${type.toUpperCase()} @ ${price.toFixed(this.dp)}`),
+        (v) => this._setInput(this.priceInput, v)
+      );
+    }
+    if (side) {
+      const entry = this._entryEstimate(side) ?? this.quote?.bid ?? 0;
+      if (sl !== null)
+        this._upsertLine("ticket", "preview-sl", sl, t, wanted, this._data("preview-sl", side, entry, lots, "SL"),
+          (v) => this._setInput(this.slInput, v));
+      if (tp !== null)
+        this._upsertLine("ticket", "preview-tp", tp, t, wanted, this._data("preview-tp", side, entry, lots, "TP"),
+          (v) => this._setInput(this.tpInput, v));
+    }
+    this._removeUnwanted(wanted, (key) => key.startsWith("ticket:"));
+  }
+
+  private _setInput(input: HTMLInputElement, v: number) {
+    input.value = v.toFixed(this.dp);
+    this._updateRiskInfo();
+  }
+
+  private _removeUnwanted(wanted: Set<string>, scope: (key: string) => boolean) {
     for (const [key, { id }] of Array.from(this.overlayIds.entries())) {
-      if (!wanted.has(key)) {
+      if (scope(key) && !wanted.has(key)) {
         this._removeOverlay(id);
         this.overlayIds.delete(key);
       }
     }
+  }
+
+  /** Dragging a position's entry line creates/moves its TP (towards profit)
+   * or SL (towards loss); the entry line itself snaps back. */
+  private _entryDragged(p: PositionInfo, value: number) {
+    const entry = this.overlayIds.get(`${p.id}:entry`);
+    if (entry) {
+      entry.value = p.open_price;
+      this.chart.instance.overrideOverlay({ id: entry.id, points: [{ timestamp: entry.timestamp, value: p.open_price }] } as any);
+    }
+    if (Math.abs(value - p.open_price) < this.symbolCfg.point_size / 2) return;
+    const profit = p.side === "buy" ? value > p.open_price : value < p.open_price;
+    void this._movePosition(p.id, profit ? "tp" : "sl", value);
   }
 
   private async _movePosition(id: string, kind: "sl" | "tp", value: number) {
@@ -582,32 +778,36 @@ export class TradingPanel {
 
   private _upsertLine(
     ownerId: string,
-    kind: LineKind,
+    kind: TradeLineKind,
     price: number,
     timestamp: number,
     wanted: Set<string>,
-    label: string,
+    data: TradeLineData,
     onMoved?: (value: number) => void
   ) {
     const key = `${ownerId}:${kind}`;
     wanted.add(key);
+    const sig = JSON.stringify(data);
     const existing = this.overlayIds.get(key);
     if (existing) {
-      if (existing.value === price) return; // unchanged
+      if (existing.value === price) {
+        if (existing.sig !== sig) {
+          // label data changed (e.g. floating P/L): update in place
+          existing.sig = sig;
+          this.chart.instance.overrideOverlay({ id: existing.id, extendData: data } as any);
+        }
+        return;
+      }
       this._removeOverlay(existing.id);
       this.overlayIds.delete(key);
     }
-    const color = COLORS[kind];
     try {
       const created = this.chart.instance.createOverlay({
-        name: "priceLine",
+        name: "tradeLine",
         points: [{ timestamp, value: price }],
         lock: !onMoved,
-        styles: {
-          line: { color, style: kind === "sl" || kind === "tp" ? "solid" : "dashed", dashedValue: [6, 4] },
-          text: { color: "#fff", backgroundColor: color, borderColor: color },
-        },
-        extendData: label,
+        zLevel: 10,
+        extendData: data,
         onPressedMoveEnd: onMoved
           ? (event: any) => {
               const newValue = event?.overlay?.points?.[0]?.value;
@@ -622,39 +822,61 @@ export class TradingPanel {
           : undefined,
       } as any);
       const id = Array.isArray(created) ? created[0] : created;
-      if (id) this.overlayIds.set(key, { id, value: price });
+      if (id) this.overlayIds.set(key, { id, value: price, sig, timestamp });
     } catch {
       /* overlay creation is best-effort; ignore failures so trading still works */
     }
   }
 
   markEntry(price: number, timestamp: number, side: "buy" | "sell") {
-    // `simpleAnnotation` draws a small arrow + label anchored at a single
-    // (timestamp, value) point, which is what a trade marker should look like.
-    this._marker(price, timestamp, side === "buy" ? "▲ BUY" : "▼ SELL", COLORS[side]);
+    this._marker(price, timestamp, { kind: side, text: side.toUpperCase(), color: COLORS[side] });
   }
 
   markExit(trade: TradeInfo) {
     const color = trade.pnl >= 0 ? COLORS.tp : COLORS.sl;
-    this._marker(trade.close_price, naiveToMs(trade.close_time), `${trade.pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)}`, color);
+    this._marker(trade.close_price, naiveToMs(trade.close_time), {
+      kind: "exit",
+      text: `${trade.pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)}`,
+      color,
+    });
   }
 
-  private _marker(price: number, timestamp: number, text: string, color: string) {
+  private _marker(price: number, timestamp: number, data: TradeMarkerData) {
     try {
       this.chart.instance.createOverlay({
-        name: "simpleAnnotation",
+        name: "tradeMarker",
         groupId: "trade-markers",
         points: [{ timestamp, value: price }],
         lock: true,
-        extendData: text,
-        styles: {
-          line: { color },
-          polygon: { color },
-          text: { color: "#fff", backgroundColor: color, borderColor: color },
-        },
+        extendData: data,
       } as any);
     } catch {
       /* best effort */
     }
+  }
+
+  /** Fill the order ticket from a Long/Short position drawing. Picks market
+   * when the entry is at the current price, otherwise the matching
+   * limit/stop type. */
+  fillTicket(o: { side: "buy" | "sell"; entry: number; sl: number; tp: number }) {
+    const q = this.quote;
+    const market = q ? (o.side === "buy" ? q.ask : q.bid) : o.entry;
+    const tolerance = Math.max((q?.spread_points ?? 0) * this.symbolCfg.point_size * 2, this.symbolCfg.point_size * 5);
+    let type: OrderType = "market";
+    if (Math.abs(o.entry - market) > tolerance) {
+      const below = o.entry < market;
+      type = o.side === "buy" ? (below ? "limit" : "stop") : below ? "stop" : "limit";
+    }
+    this.typeSelect.value = type;
+    this.typeSelect.dispatchEvent(new Event("change"));
+    if (type !== "market") this.priceInput.value = o.entry.toFixed(this.dp);
+    this.ticketSide = o.side;
+    this.slInput.value = o.sl.toFixed(this.dp);
+    this.tpInput.value = o.tp.toFixed(this.dp);
+    this._updateRiskInfo();
+    const btn = o.side === "buy" ? this.buyBtn : this.sellBtn;
+    btn.classList.add("pulse");
+    setTimeout(() => btn.classList.remove("pulse"), 1600);
+    toast(`Ticket filled: ${o.side.toUpperCase()} ${type.toUpperCase()} — press ${o.side.toUpperCase()} to place it`);
   }
 }

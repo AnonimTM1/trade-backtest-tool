@@ -123,6 +123,29 @@ into `./data/raw/`, ready to import from the app's Import screen.
 Step back only moves the cursor for viewing. It does not undo executed
 trades, and it is disabled while any position is open.
 
+## Drawing tools
+
+Left toolbar, grouped: trend line, ray, extended line, arrow · horizontal
+line, horizontal ray (one click, always extends right), vertical line ·
+rectangle, parallel channel, Fibonacci retracement · **Long / Short position**
+and **Measure** · text, brush.
+
+- **Long/Short position**: one click sets the entry. TP and SL start at a
+  default distance and can be dragged by their handles; the boxes show
+  target/stop in price, % and points plus R:R. **Use as order** copies
+  entry/SL/TP into the order ticket and picks market, limit or stop.
+- **Measure**: price change, %, points, bar count and duration between two
+  points.
+- **Selected drawing toolbar**: click a drawing to change its colour, line
+  width, line style, lock it, edit text (or double-click), or delete it
+  (`Del`). New drawings use the last colour you picked.
+- Magnet (off / weak / strong snap to OHLC), *stay in drawing mode*,
+  hide-all, lock-all, delete-all.
+- `Esc` cancels an unfinished drawing. Alt shortcuts: `T` trend, `A` arrow,
+  `H` horizontal line, `J` horizontal ray, `V` vertical line, `R` rectangle,
+  `F` Fibonacci, `L` long, `K` short, `M` measure, `N` text.
+- Drawings are saved per symbol and shared across sessions and timeframes.
+
 ## Trading simulation
 
 - Market, **limit** and **stop** orders with lot size and optional SL/TP,

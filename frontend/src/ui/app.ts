@@ -1,13 +1,15 @@
 import { api } from "../api";
 import { ChartController, INDICATORS } from "../chart/chart";
 import { DRAWING_TOOLS, DrawingsController } from "../drawings/drawings";
+import { ICONS } from "../drawings/icons";
+import { NewsController, relTime } from "../news/news";
 import { ReplayController, SPEEDS, type StepResolution } from "../replay/replay";
 import { TradingPanel } from "../trading/trading";
 import { TIMEFRAMES, type SessionInfo, type SessionState, type SymbolConfig, type Timeframe } from "../types";
 import { decimalsOf, escapeHtml, fmtTime, naiveToMs, prefs, toast } from "../util";
 import { openImportModal } from "./importModal";
 
-type Tab = "positions" | "history" | "stats";
+type Tab = "positions" | "history" | "stats" | "news";
 
 export class App {
   private root: HTMLElement;
@@ -15,6 +17,7 @@ export class App {
   private replay: ReplayController | null = null;
   private trading: TradingPanel | null = null;
   private drawings: DrawingsController | null = null;
+  private news!: NewsController;
   private session: SessionInfo | null = null;
   private symbolCfg: SymbolConfig | null = null;
   private activeTab: Tab = "positions";
@@ -31,7 +34,14 @@ export class App {
     this._buildSkeleton();
     this.chart = new ChartController("kline-chart");
     this.drawings = new DrawingsController(this.chart);
-    this.drawings.onToolFinished = () => this._markActiveTool(this.els.toolbar.querySelector("[data-tool=cursor]")!);
+    this.drawings.onToolChanged = (name) => this._markActiveTool(name);
+    this.drawings.onUseAsOrder = (o) => this.trading?.fillTicket(o);
+    this.drawings.attachStyleBar(this.root.querySelector(".chart-area") as HTMLElement);
+    this._buildDrawingToolbar();
+    this.news = new NewsController(this.chart, {
+      onPauseForNews: (ev) => toast(`Paused before ${ev.currency} ${ev.event} (${relTime(ev.timestamp - naiveToMs(this.session!.cursor_time))})`),
+    });
+    this.chart.setOnSeriesReloaded(() => this.news.onHistoryLoaded());
     this._bindKeyboard();
     await this._openSessionPicker();
   }
@@ -51,6 +61,7 @@ export class App {
             <button data-tab="positions" class="active">Positions &amp; Orders</button>
             <button data-tab="history">Trade History</button>
             <button data-tab="stats">Statistics</button>
+            <button data-tab="news">News</button>
           </div>
           <div class="tab-content" data-r="tabcontent"></div>
         </div>
@@ -67,7 +78,6 @@ export class App {
       btn.addEventListener("click", () => this._setTab(btn.dataset.tab as Tab));
     });
     q("tolatest").addEventListener("click", () => this.chart.scrollToRealTime());
-    this._buildDrawingToolbar();
   }
 
   private _setTab(tab: Tab) {
@@ -76,8 +86,9 @@ export class App {
       btn.classList.toggle("active", btn.dataset.tab === tab);
     });
     this.els.tabcontent.innerHTML = `<div data-r="tab-${tab}"></div>`;
-    if (!this.trading) return;
     const el = this.els.tabcontent.firstElementChild as HTMLElement;
+    this.news?.attachTab(tab === "news" ? el : null);
+    if (!this.trading) return;
     this.trading.positionsTableEl = tab === "positions" ? el : null;
     this.trading.historyTableEl = tab === "history" ? el : null;
     this.trading.statsEl = tab === "stats" ? el : null;
@@ -90,79 +101,88 @@ export class App {
   private _buildDrawingToolbar() {
     const toolbar = this.els.toolbar;
     toolbar.innerHTML = "";
-    const cursorBtn = document.createElement("button");
-    cursorBtn.className = "btn icon active";
-    cursorBtn.title = "Cursor (Esc)";
-    cursorBtn.textContent = "↖";
+    const button = (icon: string, title: string, onClick: () => void, extraClass = "") => {
+      const b = document.createElement("button");
+      b.className = `btn icon tool ${extraClass}`;
+      b.title = title;
+      b.innerHTML = icon;
+      b.addEventListener("click", onClick);
+      toolbar.appendChild(b);
+      return b;
+    };
+    const sep = () => {
+      const d = document.createElement("div");
+      d.className = "sep";
+      toolbar.appendChild(d);
+    };
+
+    const cursorBtn = button(ICONS.cursor, "Cursor (Esc)", () => this.drawings?.cancelDrawing(), "active");
     cursorBtn.dataset.tool = "cursor";
-    cursorBtn.addEventListener("click", () => {
-      this.drawings?.deactivate();
-      this._markActiveTool(cursorBtn);
-    });
-    toolbar.appendChild(cursorBtn);
+    sep();
 
+    let group = DRAWING_TOOLS[0].group;
     for (const tool of DRAWING_TOOLS) {
-      const btn = document.createElement("button");
-      btn.className = "btn icon";
-      btn.title = tool.label;
-      btn.textContent = tool.icon;
-      btn.addEventListener("click", () => {
-        this._markActiveTool(btn);
-        this.drawings?.startTool(tool.overlayName);
+      if (tool.group !== group) {
+        sep();
+        group = tool.group;
+      }
+      const b = button(ICONS[tool.icon], tool.hotkey ? `${tool.label} (Alt+${tool.hotkey})` : tool.label, () => {
+        if (this.drawings?.active === tool.overlayName) this.drawings.cancelDrawing();
+        else this.drawings?.startTool(tool.overlayName);
       });
-      toolbar.appendChild(btn);
+      b.dataset.tool = tool.overlayName;
     }
+    sep();
 
-    const sep = document.createElement("div");
-    sep.className = "sep";
-    toolbar.appendChild(sep);
-
-    const magnetSelect = document.createElement("select");
-    magnetSelect.title = "Magnet mode (snap drawings to OHLC)";
-    magnetSelect.innerHTML = `<option value="normal">🧲 Off</option><option value="weak_magnet">🧲 Weak</option><option value="strong_magnet">🧲 Strong</option>`;
-    magnetSelect.className = "magnet";
-    magnetSelect.addEventListener("change", () => {
-      if (this.drawings) this.drawings.magnetMode = magnetSelect.value as any;
+    const d = this.drawings!;
+    const magnetModes = ["normal", "weak_magnet", "strong_magnet"] as const;
+    const magnetTitles = { normal: "Magnet: off", weak_magnet: "Magnet: weak (snap near OHLC)", strong_magnet: "Magnet: strong (always snap to OHLC)" };
+    const magnetBtn = button(ICONS.magnet, "", () => {
+      const next = magnetModes[(magnetModes.indexOf(d.magnetMode) + 1) % magnetModes.length];
+      d.setMagnet(next);
+      paintMagnet();
     });
-    toolbar.appendChild(magnetSelect);
+    const paintMagnet = () => {
+      magnetBtn.title = magnetTitles[d.magnetMode];
+      magnetBtn.classList.toggle("toggled", d.magnetMode !== "normal");
+      magnetBtn.dataset.level = d.magnetMode === "strong_magnet" ? "2" : d.magnetMode === "weak_magnet" ? "1" : "0";
+    };
+    paintMagnet();
 
-    const hideBtn = document.createElement("button");
-    hideBtn.className = "btn icon";
-    hideBtn.title = "Hide/show all drawings";
-    hideBtn.textContent = "👁";
+    const stickyBtn = button(ICONS.sticky, "Stay in drawing mode", () => {
+      d.setSticky(!d.sticky);
+      stickyBtn.classList.toggle("toggled", d.sticky);
+    });
+    stickyBtn.classList.toggle("toggled", d.sticky);
+
     let hidden = false;
-    hideBtn.addEventListener("click", () => {
+    const hideBtn = button(ICONS.eye, "Hide all drawings", () => {
       hidden = !hidden;
-      this.drawings?.toggleHideAll(hidden);
+      d.toggleHideAll(hidden);
+      hideBtn.innerHTML = hidden ? ICONS.eyeOff : ICONS.eye;
+      hideBtn.title = hidden ? "Show all drawings" : "Hide all drawings";
       hideBtn.classList.toggle("toggled", hidden);
     });
-    toolbar.appendChild(hideBtn);
 
-    const lockBtn = document.createElement("button");
-    lockBtn.className = "btn icon";
-    lockBtn.title = "Lock/unlock all drawings";
-    lockBtn.textContent = "🔒";
     let locked = false;
-    lockBtn.addEventListener("click", () => {
+    const lockBtn = button(ICONS.unlock, "Lock all drawings", () => {
       locked = !locked;
-      this.drawings?.toggleLockAll(locked);
+      d.toggleLockAll(locked);
+      lockBtn.innerHTML = locked ? ICONS.lock : ICONS.unlock;
+      lockBtn.title = locked ? "Unlock all drawings" : "Lock all drawings";
       lockBtn.classList.toggle("toggled", locked);
     });
-    toolbar.appendChild(lockBtn);
 
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "btn icon";
-    deleteBtn.title = "Delete all drawings";
-    deleteBtn.textContent = "🗑";
-    deleteBtn.addEventListener("click", () => {
-      if (confirm("Delete all drawings for this symbol?")) void this.drawings?.deleteAll();
+    button(ICONS.trash, "Delete all drawings", () => {
+      if (confirm("Delete all drawings for this symbol?")) void d.deleteAll();
     });
-    toolbar.appendChild(deleteBtn);
   }
 
-  private _markActiveTool(active: HTMLElement) {
-    this.els.toolbar.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
-    active.classList.add("active");
+  /** Highlight the active tool button (null = cursor). */
+  private _markActiveTool(overlayName: string | null) {
+    this.els.toolbar.querySelectorAll<HTMLElement>("[data-tool]").forEach((b) => {
+      b.classList.toggle("active", overlayName === null ? b.dataset.tool === "cursor" : b.dataset.tool === overlayName);
+    });
   }
 
   // ---------- Session picker / creation ----------
@@ -364,6 +384,11 @@ export class App {
         if (btn) btn.textContent = playing ? "⏸" : "▶";
       },
     });
+    this.replay.stopAt = () => this.news.stopBefore();
+    this.replay.onStopReached = () => {
+      const ev = this.news.nextHigh();
+      if (ev) this.news.notifyPausedAt(ev);
+    };
     this.replay.setSpeedIndex(prefs.get<number>("speedIdx", 3));
     this.replay.stepRes = prefs.get<StepResolution>("stepRes", "auto");
 
@@ -375,6 +400,7 @@ export class App {
 
     await this.drawings!.loadForSymbol(session.symbol);
     this._buildTopbar();
+    void this.news.setSession(session.id, naiveToMs(session.cursor_time));
     this._setTab(this.activeTab);
     await this._refreshState();
     try {
@@ -416,6 +442,7 @@ export class App {
       </div>
       <button class="btn icon" data-r="symsettings" title="Symbol settings">⚙</button>
       <div class="grow"></div>
+      <span class="news-chip" data-r="newschip" style="display:none"></span>
       <span class="speed-info" data-r="speedinfo"></span>
       <span data-r="sessionname">${escapeHtml(this.session.name)}</span>
     `;
@@ -472,6 +499,10 @@ export class App {
       if (e.key === "Enter") void this._doJump();
     });
 
+    const chip = q("newschip");
+    chip.addEventListener("click", () => this._setTab("news"));
+    this.news.attachChip(chip);
+
     this._setCursorDisplay(this.session.cursor_time);
     this._updateSpeedInfo();
   }
@@ -523,6 +554,7 @@ export class App {
     }
     this.trading?.applyState(state);
     this._setCursorDisplay(state.cursor_time);
+    this.news?.onCursor(naiveToMs(state.cursor_time));
   }
 
   private _setCursorDisplay(t: string) {
@@ -577,6 +609,14 @@ export class App {
       const replay = this.replay;
       if (!replay) return;
       const key = e.key.toLowerCase();
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        const tool = DRAWING_TOOLS.find((t) => t.hotkey && t.hotkey.toLowerCase() === key);
+        if (tool) {
+          e.preventDefault();
+          this.drawings?.startTool(tool.overlayName);
+          return;
+        }
+      }
       if (e.shiftKey && e.key === "ArrowRight") {
         e.preventDefault();
         void replay.stepForward(1);
@@ -602,8 +642,10 @@ export class App {
       } else if (e.key === "-" || e.key === "_") {
         this._setSpeed(replay.speedIndex - 1);
       } else if (e.key === "Escape") {
-        this.drawings?.deactivate();
-        this._markActiveTool(this.els.toolbar.querySelector("[data-tool=cursor]")!);
+        this.drawings?.cancelDrawing();
+      } else if ((e.key === "Delete" || e.key === "Backspace") && this.drawings?.hasSelection) {
+        e.preventDefault();
+        this.drawings.deleteSelected();
       } else if (key === "end") {
         this.chart.scrollToRealTime();
       }

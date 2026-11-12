@@ -514,3 +514,278 @@ table.data-table tr:hover td {
   background: var(--border);
   margin: 6px 0;
 }
+
+/* ---- SL/TP editing ---- */
+.bracket {
+  display: flex;
+  gap: 4px;
+}
+.bracket .btn {
+  flex: 1;
+  padding: 4px 2px;
+  font-size: 11px;
+}
+.bracket .btn:last-child {
+  flex: 0 0 28px;
+}
+input.cell-input {
+  width: 92px;
+  height: 22px;
+  padding: 0 4px;
+  background: var(--bg-2);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--text-0);
+  font-variant-numeric: tabular-nums;
+}
+input.cell-input:hover {
+  border-color: var(--border);
+}
+input.cell-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+input.cell-input::-webkit-outer-spin-button,
+input.cell-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ---- news ---- */
+.news-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-2);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.news-chip .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.news-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 0 8px;
+  position: sticky;
+  top: -6px;
+  background: var(--bg-1);
+  z-index: 2;
+}
+.news-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.sep-v {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+}
+.muted {
+  color: var(--text-1);
+}
+.imp {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #fff;
+}
+.imp-High {
+  background: #ef5350;
+}
+.imp-Medium {
+  background: #f0a30b;
+}
+.imp-Low {
+  background: #5d606b;
+}
+.imp-Non-Economic {
+  background: #3a3e4a;
+}
+.news-table tr.day-row td {
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 600;
+  padding-top: 10px;
+  background: var(--bg-1);
+}
+.news-table tr.released td {
+  opacity: 0.6;
+}
+.news-table tr.next td {
+  background: rgba(41, 98, 255, 0.12);
+}
+.news-table td.num {
+  text-align: right;
+  white-space: nowrap;
+}
+.news-table td.actual {
+  font-weight: 700;
+  color: var(--text-0);
+}
+code {
+  background: var(--bg-3);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+/* ---- drawing toolbar ---- */
+.toolbar {
+  gap: 2px;
+}
+.toolbar .btn.icon.tool {
+  width: 32px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-1);
+  position: relative;
+}
+.toolbar .btn.icon.tool:hover {
+  background: var(--bg-3);
+  color: var(--text-0);
+}
+.toolbar .btn.icon.tool.active {
+  background: rgba(41, 98, 255, 0.18);
+  border-color: transparent;
+  color: #5b8cff;
+}
+.toolbar .btn.icon.tool.toggled {
+  color: var(--amber);
+}
+.toolbar .btn.icon.tool[data-level="2"]::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+.toolbar .sep {
+  margin: 3px 0;
+}
+
+/* ---- selected drawing toolbar ---- */
+.draw-stylebar {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.draw-stylebar .btn.icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.draw-stylebar .btn.icon.toggled {
+  color: var(--amber);
+}
+.draw-stylebar .bar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+.draw-stylebar .swatches {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.draw-stylebar .swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  padding: 0;
+}
+.draw-stylebar .swatch.on {
+  border-color: #fff;
+}
+.draw-stylebar input[type="color"] {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+.draw-stylebar .seg {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.draw-stylebar .seg button {
+  width: 26px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-1);
+}
+.draw-stylebar .seg button.on {
+  background: rgba(41, 98, 255, 0.25);
+  color: var(--text-0);
+}
+.draw-stylebar .seg button > span {
+  display: block;
+  width: 14px;
+  background: currentColor;
+}
+.draw-stylebar .seg button > span.ls {
+  height: 0;
+  background: none;
+  border-top: 2px solid currentColor;
+}
+.draw-stylebar .ls-dashed {
+  border-top-style: dashed !important;
+}
+.draw-stylebar .ls-dotted {
+  border-top-style: dotted !important;
+}
+.draw-stylebar .use-order {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.buysell button.pulse {
+  animation: pulse 0.8s ease-in-out 2;
+}
+@keyframes pulse {
+  50% {
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.35);
+  }
+}

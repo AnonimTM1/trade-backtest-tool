@@ -2,6 +2,7 @@ import type {
   Candle,
   DownloadJob,
   DrawingRecord,
+  NewsResponse,
   OrderType,
   PendingOrderInfo,
   PositionInfo,
@@ -131,6 +132,23 @@ export const api = {
     }),
   getDownloadJob: (id: string) => req<DownloadJob>(`/import/download/${id}`),
   listDownloadJobs: () => req<DownloadJob[]>("/import/download"),
+
+  sessionNews: (id: string, from: number, to: number, impacts: string[], currencies: string | null) => {
+    const params = new URLSearchParams({ from: String(Math.floor(from)), to: String(Math.floor(to)), impacts: impacts.join(",") });
+    if (currencies) params.set("currencies", currencies);
+    return req<NewsResponse>(`/sessions/${id}/news?${params}`);
+  },
+  newsStatus: () => req<{ loaded: boolean; count: number; first: string | null; last: string | null; source_timezone: string }>("/news/status"),
+  uploadNews: async (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(BASE + "/news/upload", { method: "POST", body: form });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail ?? res.statusText);
+    }
+    return res.json() as Promise<{ ok: boolean; count: number }>;
+  },
 
   listDrawings: (symbol: string) => req<DrawingRecord[]>(`/symbols/${symbol}/drawings`),
   saveDrawing: (symbol: string, drawing: Partial<DrawingRecord>) =>

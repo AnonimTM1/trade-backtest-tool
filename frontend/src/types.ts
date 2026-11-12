@@ -168,3 +168,25 @@ export interface DrawingRecord {
   group_id: string | null;
   extend_data: Record<string, unknown> | null;
 }
+
+export type NewsImpact = "High" | "Medium" | "Low" | "Non-Economic";
+
+export interface NewsEvent {
+  timestamp: number; // unix ms, UTC (same clock as candles)
+  time: string;
+  currency: string;
+  impact: NewsImpact;
+  event: string;
+  actual: string | null; // null until the replay cursor reaches the release
+  forecast: string;
+  previous: string;
+  label: string;
+  all_day: boolean;
+  released: boolean;
+}
+
+export interface NewsResponse {
+  loaded: boolean;
+  symbol_currencies: string[];
+  events: NewsEvent[];
+}

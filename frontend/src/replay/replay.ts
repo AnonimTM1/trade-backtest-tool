@@ -1,7 +1,7 @@
 import { api } from "../api";
 import type { ChartController } from "../chart/chart";
 import { TF_MINUTES, type SessionInfo, type SessionState, type StepEvent, type Timeframe } from "../types";
-import { sleep } from "../util";
+import { naiveToMs, sleep } from "../util";
 
 export interface ReplayCallbacks {
   onState: (state: SessionState) => void;
@@ -30,6 +30,9 @@ export class ReplayController {
   private speedIdx = 0;
   private loopGen = 0;
   private inflight: Promise<unknown> | null = null;
+  /** Optional "don't play past this time" hook (pause before news). */
+  stopAt: (() => number | null) | null = null;
+  onStopReached: (() => void) | null = null;
 
   constructor(session: SessionInfo, chart: ChartController, cb: ReplayCallbacks) {
     this.session = session;
@@ -156,9 +159,21 @@ export class ReplayController {
       const started = performance.now();
       const interval = 1000 / this.speed;
       const tick = Math.max(interval, MIN_TICK_MS);
-      const n = Math.max(1, Math.round(tick / interval));
+      let n = Math.max(1, Math.round(tick / interval));
+      // Never batch past a stop point: cap n so playback lands on it.
+      const stop = this.stopAt?.() ?? null;
+      const before = naiveToMs(this.session.cursor_time);
+      if (stop !== null && before < stop) {
+        const stepMs = TF_MINUTES[this.stepTf] * 60_000;
+        n = Math.max(1, Math.min(n, Math.floor((stop - before) / stepMs)));
+      }
       const ok = await this.stepForward(n);
       if (!ok || !this.playing || gen !== this.loopGen) break;
+      if (stop !== null && before < stop && naiveToMs(this.session.cursor_time) >= stop) {
+        this.pause();
+        this.onStopReached?.();
+        break;
+      }
       const elapsed = performance.now() - started;
       await sleep(Math.max(0, tick - elapsed));
     }
