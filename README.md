@@ -35,6 +35,18 @@ Built by [AnonimTM1](https://github.com/AnonimTM1).
   price and shows **MT5 busy…** instead of disconnecting.
 - Broker server time is converted to UTC automatically, including DST.
 
+**Offline data from MT5**:
+- *Import data… → From MetaTrader 5* copies M1 history from your MT5
+  terminal into the local store, so replay works with MT5 closed. In testing,
+  2 years of XAUUSD (about 700k bars) imported in about 11 seconds.
+- Bars keep MT5's own per-bar spread, and a new symbol takes the broker's
+  point and contract size.
+- **Keep updated automatically**: while MT5 is open, registered symbols are
+  topped up with new bars every 5 minutes.
+
+**Desktop app**: `TradingWiev.exe` with no Docker or Python needed. It has
+the MT5 bridge built in and a candlestick icon. See *Desktop app* below.
+
 **Economic calendar**:
 - Historical ForexFactory calendar included in
   `data/news/forexfactory_news.csv`.
@@ -66,7 +78,34 @@ Built by [AnonimTM1](https://github.com/AnonimTM1).
 - Click a tool's toolbar button to show or hide it. Right-click it, or use
   ⚙ / ✕ next to its name on the chart, for settings or to remove it.
 
+**Chart & layout**:
+- **Chart appearance** (🎨 in the top bar):
+  - presets: Dark, TradingView, Midnight blue, Monochrome, Light;
+  - candle style: candles, hollow, OHLC bars, line/area;
+  - colours for body, border and wick, background, grid, text, axis lines
+    and crosshair;
+  - toggles for the last-price line, high/low marks and the countdown.
+
+  Changes apply live and are remembered.
+- **Candle close countdown** under the last price on the price scale, on
+  every timeframe, like TradingView. Live mode counts down to the real close.
+  Replay counts down from the replay cursor. Nothing is shown once the bar's
+  close has passed, for example when the market is closed.
+- **Resizable bottom panel** (positions, history, statistics, news):
+  - drag its top edge to resize it;
+  - ▁ minimises it to the tab strip, and clicking a tab restores it;
+  - ▢ maximises it;
+  - double-clicking the edge toggles minimise and restore.
+
+  The size and state are remembered.
+- **Collapsible account panel** on the right: » minimises it to a thin strip
+  that still shows equity and floating P/L. Click the strip to bring it back.
+
 **Fixes**:
+- Dukascopy downloads silently dropped rate-limited hours (`429`). In one
+  test, only 5 of 24 hours arrived. Downloads now wait as the server asks
+  and retry. Hours that still fail are reported, so you can run the download
+  again to fill the gaps.
 - Black screen on load.
 - Unreadable Fibonacci labels.
 - Measure drawings that couldn't be selected or deleted.
@@ -84,6 +123,45 @@ Then open **http://localhost:8000**. That's it — no other manual steps.
 All data (imported price history, sessions, trades, drawings) is stored under
 `./data`, which is bind-mounted into the container, so it survives rebuilds
 and restarts.
+
+## Desktop app (Windows .exe)
+
+`TradingWiev.exe` is the whole app in one file. You don't need Docker or
+Python.
+
+1. Put `TradingWiev.exe` in a folder of its own, for example
+   `C:\TradingWiev\`.
+2. Double-click it. A console window opens, the app starts on a free local
+   port and your browser opens it. **Close the console window to quit.**
+3. Everything is stored in a **`data` folder next to the exe**: imported or
+   downloaded bars, sessions, drawings and the news calendar. To update,
+   replace the exe and keep the `data` folder. To move the app, move the
+   whole folder.
+
+More details:
+
+- The first start takes a few seconds, because a one-file exe unpacks itself
+  first.
+- **Live mode** works out of the box when MetaTrader 5 is installed, because
+  the read-only MT5 bridge is built into the exe. MT5 must be open and logged
+  in; the app never launches MT5 by itself. If a bridge is already running
+  (for example `start-mt5-bridge.bat`), the exe uses it.
+- Starting the exe while it is already running just opens the browser again.
+- It uses port 8000, or the next free port if a Docker copy is already using
+  8000.
+- Windows SmartScreen may warn on first run because the exe isn't signed.
+  Choose *More info → Run anyway*.
+
+Building it yourself (Windows):
+
+```bat
+backend\.venv\Scripts\python.exe -m pip install pyinstaller MetaTrader5 pillow
+backend\.venv\Scripts\python.exe desktop\build_exe.py
+```
+
+This builds the frontend (with npm if installed, otherwise Docker), draws the
+icon (`desktop/make_icon.py`) and runs PyInstaller with
+`desktop/TradingWiev.spec`. The output is `dist\TradingWiev.exe`.
 
 ## Importing data
 
@@ -119,6 +197,28 @@ On import, rows are validated (sorted timestamps, no duplicates,
 rejected and reported (not silently dropped), the rest are converted to
 Parquet at `./data/parquet/{SYMBOL}/M1.parquet`. Higher timeframes (M5, M15,
 M30, H1, H4, D1) are resampled from M1 on demand and cached in memory.
+
+### Importing directly from MetaTrader 5
+
+With MT5 open and logged in, and the bridge running (it's built into the exe,
+or use `start-mt5-bridge.bat` with Docker):
+
+1. Go to *Import data… → From MetaTrader 5*.
+2. Pick the MT5 symbol and a date range. The 1M/3M/6M/1Y/2Y buttons set
+   common ranges.
+3. Optionally rename the local symbol, then click *Import from MT5*.
+
+The import runs in two-week chunks with a progress bar, and imports merge, so
+overlapping ranges don't duplicate bars.
+
+How much M1 history MT5 can return is limited by its *Tools → Options →
+Charts → Max bars in chart* setting. If it returns less than you asked for,
+the app tells you to raise that setting and import again.
+
+Tick *Keep this symbol updated automatically* to register the symbol. Every
+5 minutes, while MT5 is reachable, the app fetches bars from the last stored
+one up to now. The list of auto-updated symbols is in the same tab, with
+*Update now* and *Remove*. It is saved in `data/mt5_autosync.json`.
 
 ### Getting data out of MetaTrader 5
 

@@ -22,3 +22,6 @@ frontend/dist/
 mt5bridge/.server_offset.json
 # duplicate of data/news/forexfactory_news.csv (the copy the app reads)
 /forexfactory_news.csv
+
+# desktop exe build output
+/desktop/build/

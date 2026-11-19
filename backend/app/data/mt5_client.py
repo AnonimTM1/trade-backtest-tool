@@ -128,3 +128,17 @@ def ticks(name: str, from_ms: int, to_ms: int) -> list[list[float]]:
     """[[utc_ms, bid, ask], ...] oldest first."""
     long_range = to_ms - from_ms > 3_600_000
     return _get("/ticks", timeout=HISTORY_TIMEOUT if long_range else TIMEOUT, symbol=name, from_ms=from_ms, to_ms=to_ms)["ticks"]
+
+
+def rates_range(name: str, tf: str, from_ms: int, to_ms: int) -> list[dict]:
+    """Bars with open time in [from_ms, to_ms) UTC (history import; MT5 may download first)."""
+    try:
+        return _get("/rates_range", timeout=HISTORY_TIMEOUT + 30, symbol=name, tf=tf, from_ms=from_ms, to_ms=to_ms)["candles"]
+    except BridgeRequestError as e:
+        if e.status == 404 and str(e) == "not found":  # endpoint missing, not an unknown symbol
+            raise BridgeRequestError(
+                501,
+                "The running MT5 bridge is an older version without history import. Restart it "
+                "(close and reopen Trading Wiev, or restart start-mt5-bridge.bat).",
+            ) from e
+        raise

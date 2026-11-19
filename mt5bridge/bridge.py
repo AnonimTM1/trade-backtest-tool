@@ -44,6 +44,7 @@ NY = ZoneInfo("America/New_York")
 STATE_FILE = Path(__file__).with_name(".server_offset.json")
 TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
 MAX_BARS = 20000
+MAX_RANGE_BARS = 200000
 MAX_TICKS = 200000
 QUICK_TIMEOUT_S = 8
 HISTORY_TIMEOUT_S = 120
@@ -144,8 +145,28 @@ def _worker_main(conn, path, pump: bool):
     info_cache: dict[str, tuple] = {}
     last_pump = 0.0
 
+    autostart = os.environ.get("MT5_AUTOSTART") == "1"
+    running_cache = [0.0, False]
+
+    def terminal_running() -> bool:
+        # initialize() launches the terminal when it isn't open; only attach to a running one
+        # (unless MT5_AUTOSTART=1) so opening the app doesn't pop MetaTrader up every time.
+        if autostart or os.name != "nt":
+            return True
+        if time.time() - running_cache[0] > 5:
+            import subprocess
+
+            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq terminal64.exe", "/NH"], capture_output=True,
+                                 text=True, creationflags=0x08000000).stdout  # CREATE_NO_WINDOW
+            running_cache[:] = [time.time(), "terminal64.exe" in out.lower()]
+        return running_cache[1]
+
     def ensure():
-        if m.terminal_info() is None and not (m.initialize(path) if path else m.initialize()):
+        if m.terminal_info() is not None:
+            return
+        if not terminal_running():
+            raise ConnectionError("MetaTrader 5 is not running. Open MT5 and log in, then try again.")
+        if not (m.initialize(path) if path else m.initialize()):
             raise ConnectionError(f"MetaTrader 5 is not reachable: {m.last_error()}. Open MT5 and log in.")
 
     def sym(name):
@@ -211,6 +232,20 @@ def _worker_main(conn, path, pump: bool):
                 (float(r["time"]), float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]),
                  float(r["tick_volume"]), float(r["spread"]))
                 for r in arr
+            ]
+        if kind == "rates_range":  # [from, to) in server time; may make MT5 download history
+            name, tf, s_from, s_to = args
+            sym(name)
+            arr = m.copy_rates_range(name, tf_codes[tf], int(s_from), int(s_to))
+            if arr is None:
+                err = m.last_error()
+                if err and err[0] not in (1, -1):  # 1 = RES_S_OK; anything else is worth reporting
+                    raise RuntimeError(f"copy_rates_range failed: {err}")
+                return []
+            return [
+                (float(r["time"]), float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]),
+                 float(r["tick_volume"]), float(r["spread"]))
+                for r in arr[:MAX_RANGE_BARS]
             ]
         if kind == "symbols":
             return [(x.name, x.description, x.path, bool(x.visible)) for x in (m.symbols_get() or [])]
@@ -423,6 +458,26 @@ def rates(q) -> dict:
     return {"symbol": name, "tf": tf, "candles": candles}
 
 
+def rates_range(q) -> dict:
+    """Bars with open time in [from_ms, to_ms) (UTC), oldest first - for importing history."""
+    name = _name(q)
+    tf = q.get("tf", "M1")
+    if tf not in TIMEFRAMES:
+        raise BridgeError(400, f"Unknown timeframe {tf!r}")
+    frm = int(q["from_ms"]) / 1000.0
+    to = int(q["to_ms"]) / 1000.0
+    if to <= frm:
+        raise BridgeError(400, "to_ms must be after from_ms")
+    rows = history_worker.call("rates_range", name, tf, clock.to_server(frm), clock.to_server(to) - 1, timeout=HISTORY_TIMEOUT_S)
+    lo, hi = int(frm * 1000), int(to * 1000)
+    candles = []
+    for t, o, h, l, c, v, sp in rows:
+        ts = int(clock.to_utc(t) * 1000)
+        if lo <= ts < hi:
+            candles.append({"timestamp": ts, "open": o, "high": h, "low": l, "close": c, "volume": v, "spread": sp})
+    return {"symbol": name, "tf": tf, "candles": candles}
+
+
 def ticks(q) -> dict:
     """Bid/ask ticks in [from_ms, to_ms] (UTC), oldest first, capped at MAX_TICKS."""
     name = _name(q)
@@ -444,7 +499,7 @@ def ticks(q) -> dict:
     return {"symbol": name, "ticks": out, "truncated": truncated}
 
 
-ROUTES = {"/status": status, "/symbols": symbols, "/symbol": symbol, "/tick": tick, "/rates": rates, "/ticks": ticks}
+ROUTES = {"/status": status, "/symbols": symbols, "/symbol": symbol, "/tick": tick, "/rates": rates, "/rates_range": rates_range, "/ticks": ticks}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -479,16 +534,28 @@ class Handler(BaseHTTPRequestHandler):
             super().log_message(fmt, *args)
 
 
+def serve(host: str = "127.0.0.1", port: int = 8765, quiet: bool = False):
+    """Start the workers and serve HTTP (blocks). Used by main() and by the desktop exe."""
+    st = status({})
+    if not quiet:
+        summary = {k: v for k, v in st.items() if k != "account"}
+        summary["account_mode"] = (st.get("account") or {}).get("mode")
+        print(json.dumps(summary, indent=2))
+    try:
+        history_worker.call("status")  # start the history worker up front
+    except BridgeError:
+        pass  # MT5 not open yet: workers retry on every request
+    if not quiet:
+        print(f"MT5 bridge (read-only) listening on http://{host}:{port}")
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default=os.environ.get("MT5_BRIDGE_HOST", "127.0.0.1"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("MT5_BRIDGE_PORT", "8765")))
     args = ap.parse_args()
-    st = status({})
-    print(json.dumps({k: v for k, v in st.items() if k != "account"} | {"account_mode": (st.get("account") or {}).get("mode")}, indent=2))
-    history_worker.call("status")  # start the history worker up front
-    print(f"MT5 bridge (read-only) listening on http://{args.host}:{args.port}")
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    serve(args.host, args.port)
 
 
 if __name__ == "__main__":

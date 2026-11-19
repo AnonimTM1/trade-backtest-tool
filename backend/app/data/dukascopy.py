@@ -127,24 +127,67 @@ def _ticks_to_m1_rows(ticks: list[dict]) -> list[dict]:
     return rows
 
 
-async def _fetch_hour(client: httpx.AsyncClient, symbol: str, hour_start: datetime) -> bytes:
+MAX_ATTEMPTS = 8
+MAX_BACKOFF_S = 30.0
+GIVE_UP_AFTER = 12  # consecutive failed hours (nothing getting through): stop instead of grinding on
+
+
+class _HourFailed(Exception):
+    """An hour that could not be fetched (rate limited / network), as opposed to
+    an hour that has no data (404/403, weekends and holidays)."""
+
+
+class _Throttle:
+    """Shared pause for all workers: when Dukascopy answers 429/503, everyone
+    backs off together instead of each worker hammering it again."""
+
+    def __init__(self):
+        self.until = 0.0
+
+    async def wait(self):
+        delay = self.until - asyncio.get_running_loop().time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def pause(self, seconds: float):
+        self.until = max(self.until, asyncio.get_running_loop().time() + seconds)
+
+
+def _retry_after(resp: httpx.Response, attempt: int) -> float:
+    try:
+        value = float(resp.headers.get("Retry-After", ""))
+        if value > 0:
+            return min(value, 120.0)
+    except ValueError:
+        pass
+    return min(MAX_BACKOFF_S, 1.5 * 2 ** attempt)
+
+
+async def _fetch_hour(client: httpx.AsyncClient, symbol: str, hour_start: datetime,
+                      throttle: Optional[_Throttle] = None) -> bytes:
+    """Bytes of one hour's .bi5 file, b"" when the hour has no data, raises
+    _HourFailed when it couldn't be fetched after all retries."""
+    throttle = throttle or _Throttle()
     url = _hour_url(symbol, hour_start)
-    for attempt in range(3):
+    last = "no response"
+    for attempt in range(MAX_ATTEMPTS):
+        await throttle.wait()
         try:
             resp = await client.get(url)
-        except httpx.HTTPError:
-            if attempt == 2:
-                return b""
-            await asyncio.sleep(0.5 * (attempt + 1))
+        except httpx.HTTPError as e:
+            last = f"{type(e).__name__}"
+            await asyncio.sleep(min(MAX_BACKOFF_S, 1.0 * 2 ** attempt))
             continue
         if resp.status_code == 200:
             return resp.content
         if resp.status_code in (404, 403):
             return b""  # no data published for this hour (e.g. weekend/holiday)
-        if attempt == 2:
-            return b""
-        await asyncio.sleep(0.5 * (attempt + 1))
-    return b""
+        last = f"HTTP {resp.status_code}"
+        if resp.status_code in (429, 503):  # rate limited: pause every worker
+            throttle.pause(_retry_after(resp, attempt))
+        else:
+            await asyncio.sleep(min(MAX_BACKOFF_S, 1.0 * 2 ** attempt))
+    raise _HourFailed(last)
 
 
 async def download_m1_range(
@@ -153,12 +196,17 @@ async def download_m1_range(
     date_to: datetime,
     point_size: float,
     pipet_scale: Optional[float] = None,
-    concurrency: int = 8,
+    concurrency: int = 4,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    failed: Optional[list] = None,
 ) -> list[dict]:
     """Download + decode Dukascopy ticks for `symbol` in [date_from, date_to)
     (naive UTC) and return M1 rows shaped like csv_import's:
-    timestamp/open/high/low/close/volume/spread (spread in points)."""
+    timestamp/open/high/low/close/volume/spread (spread in points).
+
+    Hours that could not be fetched (rate limit / network, after retries) are
+    appended to `failed` instead of silently counting as "no data"; running
+    the same download again fills them in (imports merge)."""
     symbol = symbol.upper()
     scale = pipet_scale if pipet_scale is not None else PIPET_SCALE_REGISTRY.get(symbol)
     if scale is None:
@@ -172,6 +220,9 @@ async def download_m1_range(
         raise DukascopyError("date_to must be after date_from")
 
     sem = asyncio.Semaphore(concurrency)
+    throttle = _Throttle()
+    streak = {"fails": 0, "ok": 0}
+    gave_up = False
     m1_rows: list[dict] = []
     rows_lock = asyncio.Lock()
     done_count = 0
@@ -180,9 +231,24 @@ async def download_m1_range(
     async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "trading-wiev/1.0"}) as client:
 
         async def worker(hour_start: datetime):
-            nonlocal done_count
+            nonlocal done_count, gave_up
             async with sem:
-                raw = await _fetch_hour(client, symbol, hour_start)
+                if gave_up:
+                    raw = b""
+                    if failed is not None:
+                        failed.append(hour_start)
+                else:
+                    try:
+                        raw = await _fetch_hour(client, symbol, hour_start, throttle)
+                        streak["fails"] = 0
+                        streak["ok"] += 1
+                    except _HourFailed:
+                        raw = b""
+                        streak["fails"] += 1
+                        if failed is not None:
+                            failed.append(hour_start)
+                        if streak["fails"] >= GIVE_UP_AFTER:
+                            gave_up = True
             if raw:
                 ticks = _decode_hour_ticks(raw, hour_start, scale)
                 hour_rows = _ticks_to_m1_rows(ticks)
@@ -195,6 +261,12 @@ async def download_m1_range(
                     on_progress(done_count, len(hours))
 
         await asyncio.gather(*(worker(h) for h in hours))
+
+    if gave_up and not streak["ok"]:
+        raise DukascopyError(
+            "Could not reach Dukascopy (every request failed: no internet connection, or the server is "
+            "rate-limiting this IP). Try again in a few minutes."
+        )
 
     m1_rows.sort(key=lambda r: r["timestamp"])
     for row in m1_rows:

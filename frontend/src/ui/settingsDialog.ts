@@ -36,6 +36,10 @@ export interface SettingsOptions<T extends object> {
   defaults: T;
   fields: FieldSpec[];
   rows?: RowsSpec;
+  /** One-click themes shown above the fields. */
+  presets?: { label: string; values: T }[];
+  /** Optional section headings: field key -> heading shown before it. */
+  sections?: Record<string, string>;
   onChange: (values: T) => void;
 }
 
@@ -67,7 +71,8 @@ export function openSettings<T extends object>(opts: SettingsOptions<T>) {
           input = `<input type="number" data-f="${f.key}" value="${v}" ${f.min !== undefined ? `min="${f.min}"` : ""} ${
             f.max !== undefined ? `max="${f.max}"` : ""
           } step="${f.step ?? "any"}"/>`;
-        return `<label class="set-field ${f.type}"><span>${escapeHtml(f.label)}${f.hint ? `<small>${escapeHtml(f.hint)}</small>` : ""}</span>${input}</label>`;
+        const heading = opts.sections?.[f.key] ? `<div class="set-section">${escapeHtml(opts.sections[f.key])}</div>` : "";
+        return `${heading}<label class="set-field ${f.type}"><span>${escapeHtml(f.label)}${f.hint ? `<small>${escapeHtml(f.hint)}</small>` : ""}</span>${input}</label>`;
       })
       .join("");
     let rowsHtml = "";
@@ -93,7 +98,17 @@ export function openSettings<T extends object>(opts: SettingsOptions<T>) {
           .join("")}
         </tbody></table>${rs.newRow ? `<button class="btn sm" data-r="addrow">+ Add level</button>` : ""}</div>`;
     }
-    body.innerHTML = `<div class="set-fields">${fieldsHtml}</div>${rowsHtml}`;
+    const presetsHtml = opts.presets?.length
+      ? `<div class="set-presets">${opts.presets.map((p, i) => `<button class="btn sm" data-preset="${i}">${escapeHtml(p.label)}</button>`).join("")}</div>`
+      : "";
+    body.innerHTML = `${presetsHtml}<div class="set-fields">${fieldsHtml}</div>${rowsHtml}`;
+    body.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((b) =>
+      b.addEventListener("click", () => {
+        values = clone(opts.presets![parseInt(b.dataset.preset!, 10)].values);
+        render();
+        emit();
+      })
+    );
 
     body.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-f]").forEach((el) => {
       const f = opts.fields.find((x) => x.key === el.dataset.f)!;

@@ -1,5 +1,6 @@
 import { init, dispose, type Chart } from "klinecharts";
 import type { Candle, Timeframe } from "../types";
+import { appearanceStyles, fmtCountdown, type ChartAppearance } from "./appearance";
 
 // klinecharts does not export `KLineData`/`Period` as named types from the
 // package root (only `Chart` and a handful of enums are), so we declare
@@ -125,11 +126,24 @@ export class ChartController {
   private epochValue = 0;
   private indicatorIds = new Map<string, string>();
   private onSeriesReloaded: (() => void) | null = null;
+  /** "Now" for the candle countdown: wall clock in live mode, the replay cursor in replay. */
+  private nowFn: () => number = () => Date.now();
+  private containerId: string;
 
   constructor(containerId: string) {
+    this.containerId = containerId;
     const chart = init(containerId, { styles: DARK_STYLES as any, timezone: "UTC" } as any);
     if (!chart) throw new Error("Failed to initialize chart");
     this.chart = chart;
+    // Time left until the last candle closes, shown under the last price.
+    this.chart.setFormatter({
+      formatExtendText: ({ data }: { data: { timestamp: number } }) => {
+        const end = data.timestamp + this.periodMs();
+        const left = end - this.nowFn();
+        // past the close (market closed / weekend / end of replay data): show nothing
+        return left >= 0 && left <= this.periodMs() ? fmtCountdown(left) : "";
+      },
+    } as any);
     // Bars are naive broker time sent as UTC epoch ms: render them as-is.
     this.chart.setTimezone("UTC");
     this.chart.setDataLoader({
@@ -167,6 +181,22 @@ export class ChartController {
         this.subscribeCallback = null;
       },
     });
+  }
+
+  /** Bar length of the current timeframe in ms. */
+  periodMs(): number {
+    const p = PERIOD_MAP[this.tf];
+    return p.span * (p.type === "minute" ? 60_000 : p.type === "hour" ? 3_600_000 : 86_400_000);
+  }
+
+  setNow(fn: () => number) {
+    this.nowFn = fn;
+  }
+
+  applyAppearance(a: ChartAppearance) {
+    this.chart.setStyles(appearanceStyles(a) as any);
+    const el = document.getElementById(this.containerId);
+    if (el) el.style.background = a.background;
   }
 
   get instance(): Chart {

@@ -9,7 +9,7 @@ from app.main import app
 client = TestClient(app)
 
 
-async def _fake_download_m1_range(symbol, date_from, date_to, point_size, pipet_scale=None, on_progress=None):
+async def _fake_download_m1_range(symbol, date_from, date_to, point_size, pipet_scale=None, on_progress=None, failed=None):
     rows = []
     for i in range(5):
         rows.append(

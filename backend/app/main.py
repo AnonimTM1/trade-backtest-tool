@@ -21,6 +21,12 @@ app.include_router(news.router)
 app.include_router(live.router)
 
 
+# keep MT5-imported symbols topped up while MT5 is open (no-op until one is registered)
+from app.data import mt5_import  # noqa: E402
+
+mt5_import.start_autosync_thread()
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}

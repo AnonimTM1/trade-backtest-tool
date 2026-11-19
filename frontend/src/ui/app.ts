@@ -1,5 +1,6 @@
 import { ANALYSIS_TOOLS, AnalysisController } from "../analysis/analysis";
 import { api } from "../api";
+import { DEFAULT_APPEARANCE, PRESETS, type ChartAppearance } from "../chart/appearance";
 import { ChartController, INDICATORS } from "../chart/chart";
 import { DRAWING_TOOLS, DrawingsController } from "../drawings/drawings";
 import { ICONS } from "../drawings/icons";
@@ -10,8 +11,13 @@ import { TradingPanel } from "../trading/trading";
 import { TIMEFRAMES, type SessionInfo, type SessionState, type SymbolConfig, type Timeframe } from "../types";
 import { decimalsOf, escapeHtml, fmtTime, naiveToMs, prefs, toast } from "../util";
 import { openImportModal } from "./importModal";
+import { openSettings } from "./settingsDialog";
+import { attachMt5SymbolSearch } from "./symbolSearch";
 
 type Tab = "positions" | "history" | "stats" | "news";
+
+/** Height of the bottom panel when minimised: just the tab strip. */
+const PANEL_MIN_H = 34;
 
 export class App {
   private root: HTMLElement;
@@ -37,6 +43,7 @@ export class App {
   async start() {
     this._buildSkeleton();
     this.chart = new ChartController("kline-chart");
+    this.chart.applyAppearance(this._appearance());
     this.drawings = new DrawingsController(this.chart);
     this.drawings.onToolChanged = (name) => this._markActiveTool(name);
     this.drawings.onUseAsOrder = (o) => this.trading?.fillTicket(o);
@@ -61,13 +68,26 @@ export class App {
           <div id="kline-chart"></div>
           <button class="btn scroll-latest" data-r="tolatest" title="Scroll to the latest bar">⇥</button>
         </div>
-        <div class="orders-panel" data-r="orders"></div>
-        <div class="bottom-panel">
+        <div class="side-panel" data-r="side">
+          <button class="side-toggle" data-r="sidetoggle" title="Minimise account panel">»</button>
+          <div class="orders-panel" data-r="orders"></div>
+          <div class="side-collapsed" data-r="sidestrip" title="Show account panel">
+            <span class="side-arrow">«</span>
+            <span class="side-label">ACCOUNT</span>
+            <span class="side-value" data-r="sidepnl"></span>
+            <span class="side-value" data-r="sideequity"></span>
+          </div>
+        </div>
+        <div class="bottom-panel" data-r="bottom">
+          <div class="panel-resizer" data-r="resizer" title="Drag to resize · double-click to minimise/restore"></div>
           <div class="tabs" data-r="tabs">
             <button data-tab="positions" class="active">Positions &amp; Orders</button>
             <button data-tab="history">Trade History</button>
             <button data-tab="stats">Statistics</button>
             <button data-tab="news">News</button>
+            <span class="grow"></span>
+            <button class="panel-btn" data-r="panelmin" title="Minimise panel">▁</button>
+            <button class="panel-btn" data-r="panelmax" title="Maximise panel">▢</button>
           </div>
           <div class="tab-content" data-r="tabcontent"></div>
         </div>
@@ -81,9 +101,14 @@ export class App {
     this.els.tabcontent = q("tabcontent");
 
     this.els.tabs.querySelectorAll<HTMLButtonElement>("button[data-tab]").forEach((btn) => {
-      btn.addEventListener("click", () => this._setTab(btn.dataset.tab as Tab));
+      btn.addEventListener("click", () => {
+        if (this.panelState === "min") this._setPanel("normal");
+        this._setTab(btn.dataset.tab as Tab);
+      });
     });
     q("tolatest").addEventListener("click", () => this.chart.scrollToRealTime());
+    this._initBottomPanel();
+    this._initSidePanel();
   }
 
   private _setTab(tab: Tab) {
@@ -205,6 +230,145 @@ export class App {
     this.els.toolbar.querySelectorAll<HTMLElement>("[data-tool]").forEach((b) => {
       b.classList.toggle("active", overlayName === null ? b.dataset.tool === "cursor" : b.dataset.tool === overlayName);
     });
+  }
+
+  // ---------- Chart appearance ----------
+
+  private _appearance(): ChartAppearance {
+    return { ...DEFAULT_APPEARANCE, ...prefs.get<Partial<ChartAppearance>>("chartAppearance", {}) };
+  }
+
+  private _openChartAppearance() {
+    const color = (key: keyof ChartAppearance, label: string) => ({ key, label, type: "color" as const });
+    openSettings<ChartAppearance>({
+      title: "Chart appearance",
+      values: this._appearance(),
+      defaults: DEFAULT_APPEARANCE,
+      presets: Object.values(PRESETS).map((p) => ({ label: p.label, values: p.value })),
+      sections: { candleType: "Candles", background: "Background & grid", textColor: "Scales & crosshair", lastPriceLine: "Price line" },
+      fields: [
+        {
+          key: "candleType",
+          label: "Style",
+          type: "select",
+          options: [
+            ["candle_solid", "Candles"],
+            ["candle_up_stroke", "Hollow candles (up hollow)"],
+            ["candle_stroke", "Hollow candles (all)"],
+            ["ohlc", "Bars (OHLC)"],
+            ["area", "Line / area"],
+          ],
+        },
+        color("lineColor", "Line / area colour"),
+        color("upColor", "Body up"),
+        color("downColor", "Body down"),
+        color("borderUp", "Border up"),
+        color("borderDown", "Border down"),
+        color("wickUp", "Wick up"),
+        color("wickDown", "Wick down"),
+        color("background", "Background"),
+        { key: "gridShow", label: "Grid lines", type: "checkbox" },
+        color("gridColor", "Grid colour"),
+        color("textColor", "Text"),
+        color("axisColor", "Axis lines"),
+        color("crosshairColor", "Crosshair"),
+        { key: "lastPriceLine", label: "Last price line", type: "checkbox" },
+        { key: "countdown", label: "Candle close countdown", type: "checkbox", hint: "time left in the current bar, under the price" },
+        { key: "highLowMarks", label: "High / low marks", type: "checkbox" },
+      ],
+      onChange: (v) => {
+        prefs.set("chartAppearance", v);
+        this.chart.applyAppearance(v);
+      },
+    });
+  }
+
+  // ---------- Bottom panel: resize / minimise / maximise ----------
+
+  private panelState: "normal" | "min" | "max" = prefs.get<"normal" | "min" | "max">("panelState", "normal");
+  private panelHeight = prefs.get<number>("panelHeight", 220);
+
+  private _initBottomPanel() {
+    const resizer = this.root.querySelector('[data-r="resizer"]') as HTMLElement;
+    resizer.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      const grid = this.root.querySelector(".app-grid") as HTMLElement;
+      const startY = e.clientY;
+      const startH = (this.root.querySelector('[data-r="bottom"]') as HTMLElement).getBoundingClientRect().height;
+      document.body.classList.add("resizing-panel");
+      const move = (ev: MouseEvent) => {
+        const h = this._clampPanel(startH + (startY - ev.clientY));
+        grid.style.setProperty("--bottom-h", `${h}px`);
+        this.panelHeight = h;
+        this.panelState = "normal";
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+        document.body.classList.remove("resizing-panel");
+        if (this.panelHeight <= PANEL_MIN_H + 8) this._setPanel("min");
+        else this._setPanel("normal");
+      };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    });
+    resizer.addEventListener("dblclick", () => this._setPanel(this.panelState === "min" ? "normal" : "min"));
+    (this.root.querySelector('[data-r="panelmin"]') as HTMLElement).addEventListener("click", () =>
+      this._setPanel(this.panelState === "min" ? "normal" : "min")
+    );
+    (this.root.querySelector('[data-r="panelmax"]') as HTMLElement).addEventListener("click", () =>
+      this._setPanel(this.panelState === "max" ? "normal" : "max")
+    );
+    window.addEventListener("resize", () => this._setPanel(this.panelState, false));
+    this._setPanel(this.panelState, false);
+  }
+
+  // ---------- Right account panel: minimise / restore ----------
+
+  private _initSidePanel() {
+    const toggle = () => this._setSideCollapsed(!this.root.querySelector(".app-grid")!.classList.contains("side-min"));
+    (this.root.querySelector('[data-r="sidetoggle"]') as HTMLElement).addEventListener("click", toggle);
+    (this.root.querySelector('[data-r="sidestrip"]') as HTMLElement).addEventListener("click", toggle);
+    this._setSideCollapsed(prefs.get<boolean>("sideCollapsed", false));
+  }
+
+  private _setSideCollapsed(collapsed: boolean) {
+    this.root.querySelector(".app-grid")!.classList.toggle("side-min", collapsed);
+    prefs.set("sideCollapsed", collapsed);
+  }
+
+  /** Equity / floating P/L on the collapsed account strip. */
+  private _renderSideStrip(state: SessionState) {
+    const pnlEl = this.root.querySelector('[data-r="sidepnl"]') as HTMLElement | null;
+    const eqEl = this.root.querySelector('[data-r="sideequity"]') as HTMLElement | null;
+    if (!pnlEl || !eqEl) return;
+    const floating = state.equity - state.balance;
+    pnlEl.textContent = state.positions?.length ? `${floating >= 0 ? "+" : ""}${floating.toFixed(2)}` : "";
+    pnlEl.className = `side-value ${floating >= 0 ? "pnl-pos" : "pnl-neg"}`;
+    eqEl.textContent = state.equity.toFixed(2);
+    eqEl.title = "Equity";
+  }
+
+  private _clampPanel(h: number): number {
+    return Math.round(Math.max(PANEL_MIN_H, Math.min(window.innerHeight - 160, h)));
+  }
+
+  private _setPanel(state: "normal" | "min" | "max", persist = true) {
+    this.panelState = state;
+    const grid = this.root.querySelector(".app-grid") as HTMLElement;
+    const h = state === "min" ? PANEL_MIN_H : state === "max" ? this._clampPanel(window.innerHeight * 0.72) : this._clampPanel(this.panelHeight);
+    grid.style.setProperty("--bottom-h", `${h}px`);
+    grid.classList.toggle("panel-min", state === "min");
+    const minBtn = this.root.querySelector('[data-r="panelmin"]') as HTMLElement;
+    const maxBtn = this.root.querySelector('[data-r="panelmax"]') as HTMLElement;
+    minBtn.textContent = state === "min" ? "▔" : "▁";
+    minBtn.title = state === "min" ? "Restore panel" : "Minimise panel";
+    maxBtn.textContent = state === "max" ? "❐" : "▢";
+    maxBtn.title = state === "max" ? "Restore panel" : "Maximise panel";
+    if (persist) {
+      prefs.set("panelState", state);
+      if (state === "normal") prefs.set("panelHeight", this.panelHeight);
+    }
   }
 
   // ---------- Session picker / creation ----------
@@ -366,78 +530,7 @@ export class App {
     q("liveform").style.display = "";
     const input = q<HTMLInputElement>("livesymbol");
     input.value = prefs.get<string>("lastLiveSymbol", "");
-    const list = q("livelist");
-    let all: { name: string; description: string; visible: boolean; path: string }[] = [];
-    let typed = false; // until the user types, show everything (not just matches of the prefilled value)
-    const render = () => {
-      const term = typed ? input.value.trim().toLowerCase() : "";
-      if (!all.length) {
-        list.innerHTML = `<div class="sym-empty">Loading symbols from MT5…</div>`;
-        return;
-      }
-      const match = term
-        ? all.filter((s) => s.name.toLowerCase().includes(term) || s.description.toLowerCase().includes(term))
-        : all;
-      // exact/prefix matches first, then Market Watch, then the rest
-      const rank = (s: (typeof all)[number]) =>
-        (term && s.name.toLowerCase() === term ? 0 : term && s.name.toLowerCase().startsWith(term) ? 1 : 2) * 2 + (s.visible ? 0 : 1);
-      const shown = match.slice().sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)).slice(0, 300);
-      const mw = all.filter((s) => s.visible).length;
-      list.innerHTML = shown.length
-        ? `<div class="sym-empty">${term ? `${match.length} match${match.length === 1 ? "" : "es"}` : `${mw} in Market Watch · ${all.length} total — type to search`}</div>` +
-          shown
-            .map(
-              (s) => `<div class="sym-item" data-sym="${escapeHtml(s.name)}"><b>${escapeHtml(s.name)}</b><span>${escapeHtml(s.description)}</span>${
-                s.visible ? `<i>MW</i>` : ""
-              }</div>`
-            )
-            .join("")
-        : `<div class="sym-empty">No symbol matches “${escapeHtml(input.value)}”</div>`;
-    };
-    const open = () => {
-      list.style.display = "";
-      // open upwards when there isn't room below the input
-      const r = input.getBoundingClientRect();
-      const up = window.innerHeight - r.bottom < 320 && r.top > window.innerHeight - r.bottom;
-      list.style.top = up ? "auto" : "";
-      list.style.bottom = up ? "calc(100% - 18px)" : "";
-      render();
-    };
-    input.addEventListener("focus", () => {
-      typed = false;
-      open();
-      input.select();
-    });
-    input.addEventListener("input", () => {
-      typed = true;
-      open();
-    });
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        const first = list.querySelector<HTMLElement>("[data-sym]");
-        if (first && typed) input.value = first.dataset.sym!;
-        list.style.display = "none";
-      } else if (e.key === "Escape") list.style.display = "none";
-    });
-    list.addEventListener("mousedown", (e) => {
-      const item = (e.target as HTMLElement).closest<HTMLElement>("[data-sym]");
-      if (!item) return;
-      e.preventDefault();
-      input.value = item.dataset.sym!;
-      typed = false;
-      list.style.display = "none";
-    });
-    input.addEventListener("blur", () => setTimeout(() => (list.style.display = "none"), 150));
-    api
-      .liveSymbols()
-      .then(({ symbols }) => {
-        all = symbols;
-        if (!input.value) input.value = symbols.find((s) => s.visible)?.name ?? "";
-        if (list.style.display !== "none") render();
-      })
-      .catch((e) => {
-        list.innerHTML = `<div class="sym-empty">Could not load the symbol list (${escapeHtml((e as Error).message)}). You can still type a symbol name.</div>`;
-      });
+    attachMt5SymbolSearch(input, q("livelist"));
     q("livestart").addEventListener("click", async () => {
       const symbol = input.value.trim();
       if (!symbol) return alert("Enter an MT5 symbol");
@@ -528,6 +621,9 @@ export class App {
 
     this.trading = new TradingPanel(this.els.orders, session, this.symbolCfg, this.chart, () => this._queueRefresh(true));
 
+    // candle countdown: real time in live mode, the replay cursor otherwise
+    // (the cursor's own M1 bar is already complete, hence +1 minute)
+    this.chart.setNow(isLive ? () => Date.now() : () => (this.session ? naiveToMs(this.session.cursor_time) + 60_000 : Date.now()));
     if (isLive) {
       this.replay = null;
       this.live = new LiveController(session, this.chart, {
@@ -632,6 +728,7 @@ export class App {
           (d) => `<label><input type="checkbox" data-ind="${d.name}" ${this.chart.hasIndicator(d.name) ? "checked" : ""}/> ${d.label}</label>`
         ).join("")}</div>
       </div>
+      <button class="btn icon" data-r="chartstyle" title="Chart appearance (colours, candles, grid)">🎨</button>
       <button class="btn icon" data-r="symsettings" title="Symbol settings">⚙</button>
       <div class="grow"></div>
       <span class="news-chip" data-r="newschip" style="display:none"></span>
@@ -689,6 +786,7 @@ export class App {
           (d) => `<label><input type="checkbox" data-ind="${d.name}" ${this.chart.hasIndicator(d.name) ? "checked" : ""}/> ${d.label}</label>`
         ).join("")}</div>
       </div>
+      <button class="btn icon" data-r="chartstyle" title="Chart appearance (colours, candles, grid)">🎨</button>
       <button class="btn icon" data-r="symsettings" title="Symbol settings">⚙</button>
       <div class="grow"></div>
       <span class="news-chip" data-r="newschip" style="display:none"></span>
@@ -729,6 +827,7 @@ export class App {
       })
     );
     q("symsettings").addEventListener("click", () => this.symbolCfg && this._openSymbolSettings(this.symbolCfg));
+    q("chartstyle").addEventListener("click", () => this._openChartAppearance());
 
     const chip = q("newschip");
     chip.addEventListener("click", () => this._setTab("news"));
@@ -782,6 +881,7 @@ export class App {
       this.session.balance = state.balance;
     }
     this.trading?.applyState(state);
+    this._renderSideStrip(state);
     this._setCursorDisplay(state.cursor_time);
     this.news?.onCursor(naiveToMs(state.cursor_time));
   }

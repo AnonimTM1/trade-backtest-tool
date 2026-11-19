@@ -135,6 +135,14 @@ export const api = {
       body: JSON.stringify({ symbol, date_from, date_to, pipet_scale: pipet_scale ?? null }),
     }),
   getDownloadJob: (id: string) => req<DownloadJob>(`/import/download/${id}`),
+  startMt5Import: (body: { broker_symbol: string; symbol?: string; date_from: string; date_to: string; keep_updated: boolean }) =>
+    req<DownloadJob>("/import/mt5", { method: "POST", body: JSON.stringify(body) }),
+  mt5Autosync: () =>
+    req<{ symbols: { symbol: string; broker: string; last_sync: string | null; last_error: string | null }[]; interval_s: number }>(
+      "/import/mt5/autosync"
+    ),
+  removeMt5Autosync: (symbol: string) => req(`/import/mt5/autosync/${encodeURIComponent(symbol)}`, { method: "DELETE" }),
+  runMt5Autosync: () => req<{ ran: boolean; reason?: string; results?: Record<string, number | string> }>("/import/mt5/autosync/run", { method: "POST" }),
   listDownloadJobs: () => req<DownloadJob[]>("/import/download"),
 
   sessionNews: (id: string, from: number, to: number, impacts: string[], currencies: string | null) => {
