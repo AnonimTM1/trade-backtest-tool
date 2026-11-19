@@ -19,6 +19,10 @@ MetaTrader 5 prices with paper trading, and an **economic calendar**
 No automated strategies, no orders sent to a broker, no user accounts. This is
 a single-user local tool.
 
+### ⬇️ [Download TradingWiev.exe (Windows)](https://drive.google.com/file/d/1rnuI_nfMsegFcgbqM3WwEFpSQb3_iUVs/view?usp=sharing)
+
+One file, no install, no Docker or Python needed. See [Desktop app](#desktop-app-windows-exe).
+
 ![Trading Wiev screenshot](docs/screenshot.png)
 
 Built by [AnonimTM1](https://github.com/AnonimTM1).
@@ -128,6 +132,10 @@ and restarts.
 
 `TradingWiev.exe` is the whole app in one file. You don't need Docker or
 Python.
+
+**Download:** [TradingWiev.exe on Google Drive](https://drive.google.com/file/d/1rnuI_nfMsegFcgbqM3WwEFpSQb3_iUVs/view?usp=sharing)
+(about 67 MB; Google Drive may say it can't scan the file for viruses
+because it is large — choose *Download anyway*).
 
 1. Put `TradingWiev.exe` in a folder of its own, for example
    `C:\TradingWiev\`.
