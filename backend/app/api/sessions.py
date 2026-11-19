@@ -19,7 +19,7 @@ from app.api.schemas import (
     SessionOut,
     StepRequest,
 )
-from app.data import resample
+from app.data import mt5_client, resample
 from app.db.database import get_db
 from app.db.models import PendingOrder, Position, ReplaySession, Trade
 from app.engine.stats import compute_stats
@@ -32,6 +32,11 @@ def _get_session_or_404(db: DbSession, session_id: str) -> ReplaySession:
     if session is None:
         raise HTTPException(404, "Session not found")
     return session
+
+
+def _replay_only(session: ReplaySession) -> None:
+    if mt5_client.is_live(session.symbol):
+        raise HTTPException(400, "Live sessions follow the market in real time; replay controls don't apply")
 
 
 def _session_out(db: DbSession, session: ReplaySession, ctx=None) -> SessionOut:
@@ -113,6 +118,15 @@ def get_session_bars(
 ):
     sessions_service.validate_tf(tf)
     session = _get_session_or_404(db, session_id)
+    if mt5_client.is_live(session.symbol):
+        try:
+            raw = mt5_client.rates(mt5_client.broker_symbol(session.symbol), tf, limit, before)
+        except mt5_client.BridgeUnavailable as e:
+            raise HTTPException(503, str(e)) from e
+        except mt5_client.BridgeRequestError as e:
+            raise HTTPException(e.status if e.status < 500 else 502, str(e)) from e
+        candles = [{k: c[k] for k in ("timestamp", "open", "high", "low", "close", "volume")} for c in raw]
+        return {"symbol": session.symbol, "tf": tf, "cursor_time": session.cursor_time, "candles": candles}
     cfg = sessions_service.get_or_create_symbol_config(db, session.symbol)
     before_ts = pd.Timestamp(before, unit="ms") if before is not None else None
     cursor_ts = pd.Timestamp(session.cursor_time)
@@ -133,6 +147,7 @@ def _event_out(db, session, ev: dict, ctx) -> dict:
 @router.post("/{session_id}/step")
 def step(session_id: str, body: StepRequest, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
+    _replay_only(session)
     display_tf = sessions_service.validate_tf(body.display_tf or body.tf)
     result = sessions_service.step_forward(db, session, body.tf, body.n)
     cfg = sessions_service.get_or_create_symbol_config(db, session.symbol)
@@ -155,6 +170,7 @@ def step(session_id: str, body: StepRequest, db: DbSession = Depends(get_db)):
 @router.post("/{session_id}/step_back")
 def step_back(session_id: str, body: StepRequest, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
+    _replay_only(session)
     sessions_service.step_back(db, session, body.tf, body.n)
     return _state(db, session)
 
@@ -162,6 +178,7 @@ def step_back(session_id: str, body: StepRequest, db: DbSession = Depends(get_db
 @router.post("/{session_id}/jump")
 def jump(session_id: str, body: JumpRequest, db: DbSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
+    _replay_only(session)
     sessions_service.jump(db, session, body.timestamp, body.force)
     return _state(db, session)
 

@@ -19,7 +19,8 @@ router = APIRouter(prefix="/api/symbols", tags=["symbols"])
 def list_symbols(db: DbSession = Depends(get_db)):
     names = set(parquet_store.list_symbols())
     for cfg in db.query(SymbolConfig).all():
-        names.add(cfg.name)
+        if not cfg.name.startswith("MT5:"):  # live symbols are listed by /api/live/symbols
+            names.add(cfg.name)
     out = []
     for name in sorted(names):
         cfg = sessions_service.get_or_create_symbol_config(db, name)
@@ -37,6 +38,23 @@ def list_symbols(db: DbSession = Depends(get_db)):
             )
         )
     return out
+
+
+@router.get("/{symbol}/config", response_model=SymbolConfigOut)
+def get_symbol_config(symbol: str, db: DbSession = Depends(get_db)):
+    cfg = sessions_service.get_or_create_symbol_config(db, symbol)
+    live = cfg.name.startswith("MT5:")
+    m1 = parquet_store.load_m1(cfg.name)
+    return SymbolConfigOut(
+        name=cfg.name,
+        point_size=cfg.point_size,
+        contract_size=cfg.contract_size,
+        default_spread_points=cfg.default_spread_points,
+        timezone=cfg.timezone,
+        has_data=live or not m1.empty,
+        first_bar=m1.index[0].to_pydatetime() if not m1.empty else None,
+        last_bar=m1.index[-1].to_pydatetime() if not m1.empty else None,
+    )
 
 
 @router.put("/{symbol}", response_model=SymbolConfigOut)

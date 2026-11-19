@@ -6,11 +6,19 @@ venv/
 node_modules/
 dist/
 frontend/dist/
-/data/
+/data/*
 !/data/.gitkeep
+# economic calendar history is versioned (the app reads it from data/news/)
+!/data/news/
+/data/news/*
+!/data/news/forexfactory_news.csv
+!/data/news/ff_feed_archive.json
 *.db
 *.parquet
 .DS_Store
 *.egg-info/
 .coverage
 *.tsbuildinfo
+mt5bridge/.server_offset.json
+# duplicate of data/news/forexfactory_news.csv (the copy the app reads)
+/forexfactory_news.csv

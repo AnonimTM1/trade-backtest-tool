@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from app.config import DATA_DIR
+from app.data import news_feed
 
 NEWS_DIR = DATA_DIR / "news"
 NEWS_FILE = NEWS_DIR / "forexfactory_news.csv"
@@ -41,6 +42,8 @@ _lock = threading.Lock()
 def symbol_currencies(symbol: str) -> list[str]:
     """Calendar currencies relevant to a symbol: XAUUSD -> [USD], EURUSD -> [EUR, USD]."""
     s = symbol.upper()
+    if s.startswith("MT5:"):
+        s = s[4:]
     for prefix, ccy in _INDEX_CCY.items():
         if s.startswith(prefix):
             return [ccy]
@@ -96,16 +99,30 @@ def _parse(path: Path) -> pd.DataFrame:
 
 
 def load() -> pd.DataFrame | None:
+    """CSV calendar merged with the weekly ForexFactory feed archive. When an
+    event is in both, the CSV row wins (it can carry the actual value)."""
     global _cache
     try:
         st = NEWS_FILE.stat()
+        csv_key = (st.st_mtime_ns, st.st_size)
     except FileNotFoundError:
-        return None
-    key = (st.st_mtime_ns, st.st_size)
+        csv_key = None
+    key = (csv_key, news_feed.version())
     with _lock:
         if _cache is not None and _cache[0] == key:
             return _cache[1]
-    df = _parse(NEWS_FILE)
+    parts = []
+    if csv_key is not None:
+        parts.append(_parse(NEWS_FILE))
+    feed = news_feed.frame()
+    if feed is not None and not feed.empty:
+        parts.append(feed)
+    if not parts:
+        return None
+    df = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
+    if len(parts) > 1:
+        df = df.drop_duplicates(subset=["time", "currency", "event"], keep="first")
+        df = df.sort_values("time", kind="stable").reset_index(drop=True)
     with _lock:
         _cache = (key, df)
     return df

@@ -5,6 +5,8 @@ import { prefs, toast } from "../util";
 import { ICONS, type IconName } from "./icons";
 import { DEFAULT_DRAW_COLOR, hexToRgba } from "./overlays";
 import "./overlays";
+import { DEFAULT_FIB, DEFAULT_GANN, fibSettings, gannSettings, type FibSettings, type GannSettings } from "./advanced";
+import { openSettings } from "../ui/settingsDialog";
 
 const GROUP_ID = "user-drawing";
 
@@ -28,7 +30,8 @@ export const DRAWING_TOOLS: DrawingTool[] = [
   { key: "vline", label: "Vertical line", icon: "vline", overlayName: "verticalStraightLine", group: "levels", hotkey: "V" },
   { key: "rect", label: "Rectangle", icon: "rect", overlayName: "rectangle", group: "shapes", hotkey: "R" },
   { key: "channel", label: "Parallel channel", icon: "channel", overlayName: "priceChannelLine", group: "shapes" },
-  { key: "fib", label: "Fibonacci retracement", icon: "fib", overlayName: "fibonacciLine", group: "shapes", hotkey: "F" },
+  { key: "fib", label: "Fibonacci retracement (double-click for settings)", icon: "fib", overlayName: "fibRetracement", group: "shapes", hotkey: "F" },
+  { key: "gann", label: "Gann box (double-click for settings)", icon: "gann", overlayName: "gannBox", group: "shapes", hotkey: "G" },
   { key: "long", label: "Long position", icon: "long", overlayName: "longPosition", group: "trading", hotkey: "L" },
   { key: "short", label: "Short position", icon: "short", overlayName: "shortPosition", group: "trading", hotkey: "K" },
   { key: "measure", label: "Measure (price / % / bars)", icon: "measure", overlayName: "measure", group: "trading", hotkey: "M" },
@@ -38,6 +41,14 @@ export const DRAWING_TOOLS: DrawingTool[] = [
 
 const TEXT_OVERLAYS = new Set(["textLabel", "simpleAnnotation"]);
 const POSITION_OVERLAYS = new Set(["longPosition", "shortPosition"]);
+/** Overlays whose options live in extendData and are edited in a settings dialog. */
+const SETTINGS_OVERLAYS = new Set(["fibRetracement", "gannBox"]);
+
+function defaultSettingsFor(name: string): FibSettings | GannSettings | undefined {
+  if (name === "fibRetracement") return prefs.get<FibSettings>("fibSettings", DEFAULT_FIB);
+  if (name === "gannBox") return prefs.get<GannSettings>("gannSettings", DEFAULT_GANN);
+  return undefined;
+}
 
 export const SWATCHES = ["#2962ff", "#26a69a", "#ef5350", "#f0b90b", "#ab47bc", "#00bcd4", "#ff9800", "#d1d4dc"];
 
@@ -128,6 +139,7 @@ export class DrawingsController {
       },
       onDoubleClick: (event: any) => {
         if (TEXT_OVERLAYS.has(event.overlay.name)) this._editText(event.overlay.id);
+        else if (SETTINGS_OVERLAYS.has(event.overlay.name)) this._openSettings(event.overlay.id);
         return false;
       },
       onRemoved: (event: any) => {
@@ -148,7 +160,7 @@ export class DrawingsController {
   startTool(overlayName: string) {
     this.cancelDrawing();
     this._deselect();
-    let extendData: string | undefined;
+    let extendData: unknown = defaultSettingsFor(overlayName);
     if (TEXT_OVERLAYS.has(overlayName)) {
       const text = prompt("Text:");
       if (!text) {
@@ -324,6 +336,7 @@ export class DrawingsController {
         .join("")}</div>`}
       <span class="bar-sep"></span>`}
       ${isText ? `<button class="btn icon" data-act="edit" title="Edit text (double-click)">${ICONS.edit}</button>` : ""}
+      ${SETTINGS_OVERLAYS.has(ov.name) ? `<button class="btn icon" data-act="settings" title="Settings (double-click)">${ICONS.gear}</button>` : ""}
       ${isPos ? `<button class="btn use-order" data-act="order" title="Copy entry / SL / TP into the order ticket">${ICONS.order} Use as order</button>` : ""}
       <button class="btn icon ${ov.lock ? "toggled" : ""}" data-act="lock" title="${ov.lock ? "Unlock" : "Lock"}">${ov.lock ? ICONS.lock : ICONS.unlock}</button>
       <button class="btn icon" data-act="delete" title="Delete (Del)">${ICONS.trash}</button>
@@ -354,6 +367,7 @@ export class DrawingsController {
     });
     bar.querySelector('[data-act="delete"]')?.addEventListener("click", () => this.deleteSelected());
     bar.querySelector('[data-act="edit"]')?.addEventListener("click", () => this._editText(id));
+    bar.querySelector('[data-act="settings"]')?.addEventListener("click", () => this._openSettings(id));
     bar.querySelector('[data-act="order"]')?.addEventListener("click", () => this._useAsOrder(id));
   }
 
@@ -399,6 +413,63 @@ export class DrawingsController {
     void this._persist(id);
   }
 
+  private _openSettings(id: string) {
+    const ov = this._get(id);
+    if (!ov) return;
+    const apply = (values: object, prefKey: string) => {
+      this.chart.instance.overrideOverlay({ id, extendData: values } as any);
+      prefs.set(prefKey, values); // new drawings start from the last-used settings
+      void this._persist(id);
+    };
+    const levelColumns = [
+      { key: "on", label: "", type: "checkbox" as const },
+      { key: "value", label: "Level", type: "number" as const, width: "72px", step: 0.001 },
+      { key: "color", label: "Colour", type: "color" as const },
+    ];
+    const byValue = (a: { value: number }, b: { value: number }) => a.value - b.value;
+    if (ov.name === "fibRetracement") {
+      openSettings<FibSettings>({
+        title: "Fibonacci retracement",
+        values: fibSettings(ov),
+        defaults: DEFAULT_FIB,
+        fields: [
+          { key: "showLevels", label: "Show level values", type: "checkbox" },
+          { key: "showPrices", label: "Show prices", type: "checkbox" },
+          { key: "labelsLeft", label: "Labels on the left", type: "checkbox" },
+          { key: "fill", label: "Background fill", type: "checkbox" },
+          { key: "extendLeft", label: "Extend lines left", type: "checkbox" },
+          { key: "extendRight", label: "Extend lines right", type: "checkbox" },
+          { key: "reverse", label: "Reverse (0 at the start point)", type: "checkbox" },
+          { key: "trendline", label: "Show trend line", type: "checkbox" },
+          { key: "singleColor", label: "Use the drawing colour for all levels", type: "checkbox" },
+        ],
+        rows: { key: "levels", title: "Levels", columns: levelColumns, sort: byValue, newRow: () => ({ value: 0.65, color: "#2962ff", on: true }) },
+        onChange: (v) => apply(v, "fibSettings"),
+      });
+    } else if (ov.name === "gannBox") {
+      const g = gannSettings(ov);
+      // one dialog, two level lists: edit price levels in the table, time levels mirror them unless edited separately
+      openSettings<GannSettings & { sameTime: boolean }>({
+        title: "Gann box",
+        values: { ...g, sameTime: JSON.stringify(g.priceLevels) === JSON.stringify(g.timeLevels) },
+        defaults: { ...DEFAULT_GANN, sameTime: true },
+        fields: [
+          { key: "angles", label: "Gann angles", type: "checkbox" },
+          { key: "fill", label: "Background fill", type: "checkbox" },
+          { key: "labels", label: "Level labels", type: "checkbox" },
+          { key: "reverse", label: "Reverse (start from the second point)", type: "checkbox" },
+          { key: "sameTime", label: "Use the same levels for time", type: "checkbox", hint: "Off: time levels keep their own values" },
+        ],
+        rows: { key: "priceLevels", title: "Price levels", columns: levelColumns, sort: byValue, newRow: () => ({ value: 0.875, color: "#2962ff", on: true }) },
+        onChange: (v) => {
+          const { sameTime, ...rest } = v;
+          const out: GannSettings = { ...rest, timeLevels: sameTime ? rest.priceLevels : g.timeLevels };
+          apply(out, "gannSettings");
+        },
+      });
+    }
+  }
+
   private _useAsOrder(id: string) {
     const ov = this._get(id);
     if (!ov || ov.points?.length < 3) return;
@@ -414,6 +485,12 @@ export class DrawingsController {
   // ---------- persistence ----------
 
   private _hydrate(d: DrawingRecord) {
+    // Drawings saved without time coordinates can't be rendered, selected or
+    // deleted from the chart ("ghost" drawings): clean them up instead.
+    if (!d.points?.length || d.points.some((p: any) => !Number.isFinite(p.timestamp) || !Number.isFinite(p.value))) {
+      void api.deleteDrawing(this.symbol, d.id).catch(() => {});
+      return;
+    }
     const text = (d.extend_data as { text?: string } | null)?.text;
     try {
       this.chart.instance.createOverlay({
@@ -424,7 +501,9 @@ export class DrawingsController {
         visible: d.visible && !this.hidden,
         groupId: GROUP_ID,
         styles: d.styles ?? undefined,
-        extendData: TEXT_OVERLAYS.has(d.overlay_name) ? text ?? "" : undefined,
+        extendData: TEXT_OVERLAYS.has(d.overlay_name)
+          ? text ?? ""
+          : (d.extend_data as { settings?: unknown } | null)?.settings ?? defaultSettingsFor(d.overlay_name),
         ...this._handlers(d.overlay_name),
       } as any);
     } catch (e) {
@@ -435,6 +514,13 @@ export class DrawingsController {
   private async _persist(id: string) {
     const overlay = this._get(id);
     if (!overlay || !overlay.points?.length) return;
+    if (overlay.points.some((p: any) => !Number.isFinite(p.timestamp) || !Number.isFinite(p.value))) {
+      // placed before the chart had bars to anchor it to: drop it rather than save a ghost
+      this._silentRemove({ id });
+      if (this.selectedId === id) this._deselect();
+      toast("Drawing could not be placed (chart was still loading) - please draw it again", true);
+      return;
+    }
     try {
       await api.saveDrawing(this.symbol, {
         id: overlay.id,
@@ -444,7 +530,12 @@ export class DrawingsController {
         lock: !!overlay.lock,
         visible: overlay.visible !== false,
         group_id: GROUP_ID,
-        extend_data: typeof overlay.extendData === "string" ? { text: overlay.extendData } : null,
+        extend_data:
+          typeof overlay.extendData === "string"
+            ? { text: overlay.extendData }
+            : overlay.extendData && typeof overlay.extendData === "object"
+              ? { settings: overlay.extendData }
+              : null,
       });
     } catch (e) {
       toast("Could not save drawing: " + (e as Error).message, true);

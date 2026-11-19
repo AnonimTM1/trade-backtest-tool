@@ -4,7 +4,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session as DbSession
 
-from app.data import news
+from app.data import mt5_client, news, news_feed
 from app.db.database import get_db
 from app.db.models import ReplaySession
 
@@ -20,9 +20,16 @@ def _csv_list(value: str | None) -> list[str]:
 @router.get("/api/news/status")
 def news_status():
     try:
-        return news.status()
+        return {**news.status(), "feed": news_feed.status()}
     except Exception as e:  # a malformed file shouldn't take the endpoint down
         raise HTTPException(500, f"Failed to read news file: {e}") from e
+
+
+@router.post("/api/news/feed/refresh")
+def refresh_feed(force: bool = Query(False)):
+    """Fetch this week's ForexFactory calendar in the background (rate-limited)."""
+    started = news_feed.refresh(force=force)
+    return {"started": started, **news_feed.status()}
 
 
 @router.post("/api/news/upload")
@@ -47,6 +54,8 @@ def session_news(
     session = db.get(ReplaySession, session_id)
     if session is None:
         raise HTTPException(404, "Session not found")
+    if mt5_client.is_live(session.symbol):
+        news_feed.refresh()  # live chart: keep this week's calendar current (no-op if fresh)
     start_ts = pd.Timestamp(start, unit="ms")
     end_ts = pd.Timestamp(end, unit="ms")
     if end_ts < start_ts:
@@ -69,6 +78,7 @@ def session_news(
         raise HTTPException(500, f"Failed to read news file: {e}") from e
     return {
         "loaded": news.load() is not None,
+        "feed": news_feed.status() if mt5_client.is_live(session.symbol) else None,
         "symbol_currencies": default_ccy,
         "events": events,
     }

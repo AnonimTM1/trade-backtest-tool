@@ -789,3 +789,111 @@ code {
     box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.35);
   }
 }
+
+/* ---------- live (MT5) mode ---------- */
+.live-badge {
+  background: #ef5350;
+  color: #fff;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  animation: live-blink 2s ease-in-out infinite;
+}
+.live-badge.sm { font-size: 9px; padding: 1px 5px; animation: none; }
+@keyframes live-blink { 50% { opacity: 0.65; } }
+.live-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text-dim, #8a8e98);
+}
+.live-pill.on { color: #26a69a; border-color: rgba(38, 166, 154, 0.5); }
+.live-pill.off { color: #ef5350; border-color: rgba(239, 83, 80, 0.5); }
+.live-pill.real { color: #fff; background: #ef5350; border-color: #ef5350; }
+.paper-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(41, 98, 255, 0.18);
+  color: #7ea1ff;
+}
+
+/* long tool column: scroll instead of overflowing on short screens */
+.toolbar {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.toolbar::-webkit-scrollbar { display: none; }
+.toolbar .btn.icon.tool { flex: 0 0 auto; height: 28px; }
+.toolbar .sep { flex: 0 0 auto; margin: 2px 0; }
+
+/* ---------- settings dialog ---------- */
+.settings-modal {
+  min-width: 380px;
+  max-width: 560px;
+  max-height: 86vh;
+  overflow-y: auto;
+}
+.set-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+  margin-bottom: 10px;
+}
+.set-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-1);
+}
+.set-field.checkbox { justify-content: flex-end; flex-direction: row-reverse; }
+.set-field span { display: flex; flex-direction: column; }
+.set-field small { color: var(--text-2, #6a6e78); font-size: 10px; }
+.set-field input[type="number"] { width: 72px; }
+.set-field select { max-width: 200px; }
+.set-rows-title { font-size: 12px; font-weight: 600; margin: 6px 0 4px; color: var(--text-0); }
+.set-rows table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.set-rows th { text-align: left; font-weight: 500; color: var(--text-2, #6a6e78); padding: 2px 4px; }
+.set-rows td { padding: 2px 4px; }
+.set-rows input[type="color"] { width: 34px; height: 22px; padding: 0; border: none; background: none; }
+.set-rows input[type="number"], .set-rows input[type="text"], .set-rows input[type="time"] { padding: 2px 4px; }
+.btn.sm { padding: 2px 8px; font-size: 11px; }
+.btn.icon.sm { width: 22px; height: 22px; padding: 0; }
+.live-pill.busy { color: #f0b90b; border-color: rgba(240, 185, 11, 0.5); }
+
+/* MT5 symbol search */
+.sym-picker { position: relative; }
+.sym-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: 360px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--bg-2, #1e222d);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  z-index: 10;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.sym-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.sym-item:hover { background: var(--bg-3); }
+.sym-item b { min-width: 84px; color: var(--text-0); }
+.sym-item span { color: var(--text-2, #6a6e78); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sym-item i { font-style: normal; font-size: 9px; color: #26a69a; border: 1px solid rgba(38, 166, 154, 0.5); border-radius: 3px; padding: 0 3px; }
+.sym-empty { padding: 4px 8px; font-size: 11px; color: var(--text-2, #6a6e78); }
+.news-feed { font-size: 11px; padding: 4px 8px; }

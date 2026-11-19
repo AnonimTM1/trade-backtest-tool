@@ -29,6 +29,11 @@ export const ICONS = {
   trash: svg(`<path d="M3 5h12M7 5V3h4v2M4.5 5l.8 10.5h7.4L13.5 5M7.5 8v5M10.5 8v5"/>`),
   order: svg(`<path d="M3 9h7M7 5.5L10.5 9 7 12.5"/><rect x="11" y="3" width="4.5" height="12" rx="1"/>`),
   edit: svg(`<path d="M12.5 2.5l3 3-9 9H3.5v-3z"/>`),
+  gann: svg(`<rect x="2.5" y="2.5" width="13" height="13" rx="0.5"/><path d="M2.5 9h13M9 2.5v13" stroke-dasharray="1.5 1.8"/><path d="M2.5 15.5L15.5 2.5M2.5 15.5L15.5 9M2.5 15.5L9 2.5"/>`),
+  gear: svg(`<circle cx="9" cy="9" r="2.4"/><path d="M9 1.8v2.1M9 14.1v2.1M1.8 9h2.1M14.1 9h2.1M3.9 3.9l1.5 1.5M12.6 12.6l1.5 1.5M3.9 14.1l1.5-1.5M12.6 5.4l1.5-1.5"/>`),
+  killzone: svg(`<rect x="1.5" y="5" width="4.5" height="8" rx="0.5" fill="rgba(171,71,188,.35)" stroke="#ab47bc"/><rect x="6.8" y="3" width="4.5" height="8" rx="0.5" fill="rgba(41,98,255,.35)" stroke="#2962ff"/><rect x="12" y="6" width="4.5" height="9" rx="0.5" fill="rgba(38,166,154,.35)" stroke="#26a69a"/>`),
+  ob: svg(`<rect x="2" y="9" width="14" height="4.5" rx="0.5" fill="rgba(38,166,154,.35)" stroke="#26a69a"/><path d="M5 9V4.5M5 13.5v2M5 5.5h0"/><rect x="3.8" y="9.5" width="2.4" height="3.5" fill="currentColor" stroke="none"/><path d="M9 8l2.5-5 2.5 2.5L16 2"/>`),
+  fvg: svg(`<rect x="2" y="7.6" width="14" height="2.8" fill="rgba(240,185,11,.5)" stroke="none"/><path d="M4 16v-5.5M9 15.5V2.5M14 1.5v6"/><rect x="3" y="11.5" width="2" height="3.5" fill="currentColor" stroke="none"/><rect x="8" y="4" width="2" height="9.5" fill="currentColor" stroke="none"/><rect x="13" y="2.5" width="2" height="4" fill="currentColor" stroke="none"/>`),
 };
 
 export type IconName = keyof typeof ICONS;

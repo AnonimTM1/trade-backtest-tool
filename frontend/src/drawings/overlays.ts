@@ -195,7 +195,6 @@ registerOverlay({
         type: "polygon",
         attrs: { coordinates: [{ x: a.x, y: a.y }, { x: b.x, y: a.y }, { x: b.x, y: b.y }, { x: a.x, y: b.y }] },
         styles: { style: "fill", color: hexToRgba(color, 0.15) },
-        ignoreEvent: true,
       },
       { type: "line", attrs: { coordinates: [{ x: midX, y: a.y }, { x: midX, y: b.y }] }, styles: { color, style: "dashed" }, ignoreEvent: true },
       { type: "line", attrs: { coordinates: [{ x: a.x, y: (a.y + b.y) / 2 }, { x: b.x, y: (a.y + b.y) / 2 }] }, styles: { color, style: "dashed" }, ignoreEvent: true },

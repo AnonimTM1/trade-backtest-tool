@@ -82,6 +82,8 @@ def save_m1(symbol: str, rows: list[dict], merge: bool = True) -> int:
 
 
 def load_m1(symbol: str) -> pd.DataFrame:
+    if symbol.upper().startswith("MT5:"):  # live symbols have no local history
+        return _empty()
     path = m1_path(symbol)
     try:
         st = path.stat()

@@ -12,14 +12,66 @@
 A local, self-hosted bar-replay and manual backtesting tool for XAUUSD (or any
 CSV-importable symbol), modeled on TradingView's Bar Replay: pick a past
 date, hide the future, step forward/back bar by bar, draw on the chart, and
-place simulated buy/sell trades with SL/TP.
+place simulated buy/sell trades with SL/TP. A **Live mode** shows real-time
+MetaTrader 5 prices with paper trading, and an **economic calendar**
+(ForexFactory) appears on the chart in both modes.
 
-No indicators, no automated strategies, no live broker connection, no user
-accounts — this is a single-user, single-process local tool.
+No automated strategies, no orders sent to a broker, no user accounts. This is
+a single-user local tool.
 
 ![Trading Wiev screenshot](docs/screenshot.png)
 
 Built by [AnonimTM1](https://github.com/AnonimTM1).
+
+## What's new
+
+**Live mode (MetaTrader 5)**, paper trading on real prices:
+- Real-time MT5 chart with drawings, positions, SL/TP, pending orders, news
+  and statistics. **No orders are sent to MT5.** The bridge is read-only.
+- Searchable picker over every MT5 symbol, with Market Watch symbols first.
+- Every tick between polls goes through SL/TP and pending-order checks.
+  Ticks from while the app was closed are processed too, up to 7 days back.
+- Stays connected while MT5 downloads history. The app keeps the last known
+  price and shows **MT5 busy…** instead of disconnecting.
+- Broker server time is converted to UTC automatically, including DST.
+
+**Economic calendar**:
+- Historical ForexFactory calendar included in
+  `data/news/forexfactory_news.csv`.
+- This week's calendar is fetched live from ForexFactory for live sessions.
+- High and Medium events are marked at the bottom of the chart, with a News
+  tab and a countdown chip for the next high-impact release.
+- In replay, the actual value stays hidden until the cursor reaches the
+  release. Replay can also pause before high-impact news.
+
+**Trading**:
+- Drag SL/TP lines on the chart. Drag a position's entry line to add SL or
+  TP. Values can still be typed in the table.
+
+**Drawing tools**:
+- Consistent SVG icons and a grouped toolbar.
+- One-click horizontal ray that always extends right.
+- New tools: arrow, text label, measure, and long/short position with
+  **Use as order**.
+- Configurable **Fibonacci retracement**: levels, colours, extend, labels,
+  fill, reverse.
+- **Gann box** with Gann angles.
+- Style bar for the selected drawing: colour, width, line style, lock, edit,
+  delete. `Del` also deletes it.
+- Magnet, *stay in drawing mode*, and Alt hotkeys.
+
+**ICT analysis**:
+- **Kill zones** in New York time, DST-aware, with editable sessions.
+- **Order block finder** and **FVG finder**.
+- Click a tool's toolbar button to show or hide it. Right-click it, or use
+  ⚙ / ✕ next to its name on the chart, for settings or to remove it.
+
+**Fixes**:
+- Black screen on load.
+- Unreadable Fibonacci labels.
+- Measure drawings that couldn't be selected or deleted.
+- "Ghost" drawings saved without time coordinates.
+- Wrongly pointing trade markers and arrows.
 
 ## Quick start
 
@@ -141,10 +193,122 @@ and **Measure** · text, brush.
   (`Del`). New drawings use the last colour you picked.
 - Magnet (off / weak / strong snap to OHLC), *stay in drawing mode*,
   hide-all, lock-all, delete-all.
+- **Fibonacci retracement** (configurable): double-click it or use ⚙ in the
+  drawing toolbar to enable/disable levels, change values and colours, add
+  your own levels, extend left/right, show prices/levels, labels left or
+  right, background fill, reverse, single colour. The last settings you used
+  become the default for new Fibonacci drawings.
+- **Gann box**: price × time grid with Gann angles from the start corner;
+  levels, angles, fill, labels and reverse are configurable the same way.
 - `Esc` cancels an unfinished drawing. Alt shortcuts: `T` trend, `A` arrow,
   `H` horizontal line, `J` horizontal ray, `V` vertical line, `R` rectangle,
-  `F` Fibonacci, `L` long, `K` short, `M` measure, `N` text.
+  `F` Fibonacci, `G` Gann box, `L` long, `K` short, `M` measure, `N` text.
 - Drawings are saved per symbol and shared across sessions and timeframes.
+
+### ICT analysis tools
+
+Toolbar buttons below the drawing tools. Click to show or hide, right-click for
+settings. They only use the bars loaded on the chart, so in replay they never
+see the future.
+
+- **Kill zones**: Asia 20:00–00:00, London 02:00–05:00 and NY AM 07:00–10:00
+  are on by default; London Close 10:00–12:00 and NY PM 13:30–16:00 are off.
+  Times are **New York time**, and daylight saving is handled automatically.
+  Each zone is drawn as a box around the session's high and low, or as a
+  full-height band. You can edit the times, names and colours. Shown on
+  timeframes up to H1. Chart times are treated as UTC, which matches
+  Dukascopy and MT5 Live data.
+- **Order block finder**: on a break of structure (a close beyond the last
+  swing high or low, with swing length N bars on each side), the order block
+  is the last opposite candle of the leg. A block is shown as touched once
+  price comes back into it. It is broken when a candle closes through it.
+  Settings: swing length, blocks per side, show broken blocks, extend,
+  colours.
+- **FVG finder**: three-candle imbalances, where candle 3's low is above
+  candle 1's high (bullish) or the reverse (bearish). Gaps smaller than a
+  multiple of ATR(14) are filtered out. A gap ends when price fully fills it.
+  Options: the 50% line (consequent encroachment), show filled gaps, how many
+  to keep, colours.
+
+## Live mode (MetaTrader 5)
+
+Real-time MT5 prices with **paper trading**. Positions, SL/TP, pending
+orders, drawings, news and statistics all work as in replay, but **no orders
+are sent to your MT5 account**. The bridge is read-only and has no
+order-sending code.
+
+1. Open MetaTrader 5 and log in. A demo account is fine.
+2. Double-click **`start-mt5-bridge.bat`**. The first run creates a Python
+   environment and installs `MetaTrader5`. Keep the window open.
+3. In the app, open ☰. Under **Live (MetaTrader 5)**, pick a symbol from
+   Market Watch and click **Start Live**.
+
+How it works:
+
+- The MetaTrader5 Python package only runs on Windows, so
+  `mt5bridge/bridge.py` runs on the host at `127.0.0.1:8765`. The Docker app
+  reaches it at `MT5_BRIDGE_URL` (default
+  `http://host.docker.internal:8765`).
+- Broker server time is converted to UTC. The bridge detects the server's
+  offset from live ticks and caches it. When the offset matches the common
+  "NY close = 00:00" convention (UTC+2 in winter, UTC+3 in US summer), it
+  applies that rule with DST changes across history. To force an offset, set
+  `MT5_UTC_OFFSET=2` (hours) or `MT5_UTC_OFFSET=nyclose`.
+- Every 0.5 s the app syncs the session. The backend replays every MT5 tick
+  since the previous sync through the SL/TP and pending-order engine, so a
+  spike through a stop between polls is not missed. Ticks from while the app
+  was closed are processed when you reopen the session, up to 7 days back.
+- Contract size, point size and spread come from the broker's symbol
+  specification. Fills use the live bid/ask.
+- **Live news**: when you open a live session, the app pulls this week's
+  ForexFactory calendar from its public JSON feed
+  (`nfs.faireconomy.media/ff_calendar_thisweek.json`). It pulls it again every
+  30 minutes while the session is open. Events show on the chart and in the
+  News tab like the CSV calendar. The two sources are merged, and when an
+  event is in both, the CSV row wins because it can include the actual value.
+  The feed has times with time zones, so the UTC conversion is exact.
+  - Every fetched week is kept in `data/news/ff_feed_archive.json`, so past
+    weeks don't disappear when the feed moves on to the next week.
+  - The feed has **no actual values**, only forecast and previous.
+  - ForexFactory blocks clients that poll too often. The app fetches at most
+    once every 30 minutes, at most once a minute even when forced, and waits
+    as long as the server's `Retry-After` header says.
+- The first time you open a symbol or timeframe, MT5 may download its history
+  from the broker. This can take seconds to a minute, and the whole terminal
+  stalls while it does. To keep the stall from freezing the bridge, the
+  bridge's HTTP process never calls MT5 itself:
+  - one worker process keeps the watched quotes fresh every 100 ms;
+  - a second worker process handles bars and the symbol list.
+
+  While MT5 is busy, the app keeps the last known price. The status shows
+  **MT5 busy…** in yellow, not *disconnected*. It only reports *disconnected*
+  after several failed polls in a row.
+
+## Economic calendar (news)
+
+- **History**: the ForexFactory calendar CSV is at
+  `data/news/forexfactory_news.csv` and is versioned in this repo, so the
+  calendar works right after cloning. Its times are Europe/London; set
+  `NEWS_TIMEZONE` for exports made in another timezone. You can replace it
+  from *Import data… → Manual upload → Economic calendar*. The columns are
+  `Date,Time,Day,Currency,Impact,Event,Actual,Forecast,Previous,Time_Label,Event_ID`.
+- **This week (live)**: see *Live news* under Live mode. Fetched weeks are
+  archived in `data/news/ff_feed_archive.json`, which is versioned too.
+- **On the chart**, events are marked at the bottom of the candle pane under
+  the bar of their release:
+  - filled markers for released events;
+  - hollow markers for upcoming ones;
+  - a dashed guide line for the next High-impact event.
+
+  Hover a marker for the details.
+- **News tab** filters:
+  - High, Medium and Low impact;
+  - the symbol's currencies, or all currencies;
+  - show on chart;
+  - *pause before high-impact news*, which stops replay one minute before
+    each High release.
+- **No look-ahead**: in replay, the backend withholds an event's actual value
+  until the cursor reaches its release time.
 
 ## Trading simulation
 
@@ -204,10 +368,15 @@ npm run dev
 
 ```
 backend/app/{main.py, api/, engine/, data/, db/}   FastAPI app, trading engine, CSV/parquet/resample, SQLAlchemy models
-backend/tests/                                      pytest suite (engine, resample, CSV import, API)
-frontend/src/{chart/, replay/, trading/, drawings/, ui/}   Vite + TS + KLineChart frontend
+backend/app/api/live.py, data/mt5_client.py         live (MT5) mode: bridge client, live sessions, tick sync
+backend/app/data/news.py, data/news_feed.py         economic calendar: CSV history + weekly ForexFactory feed
+backend/tests/                                      pytest suite (engine, resample, CSV import, API, live, news)
+frontend/src/{chart/, replay/, live/, trading/}     chart, replay & live drivers, trading panel
+frontend/src/{drawings/, analysis/, news/, ui/}     drawing tools, ICT analysis, calendar, UI
+mt5bridge/bridge.py, start-mt5-bridge.bat           read-only MT5 market-data bridge (Windows host)
 tools/export_mt5.py                                 Windows-only MT5 export helper (not used in Docker)
-data/                                                bind-mounted volume: raw/, parquet/, app.db (gitignored)
+data/                                                bind-mounted volume: raw/, parquet/, app.db (gitignored);
+                                                     data/news/ calendar files are versioned
 Dockerfile, docker-compose.yml                       single service on :8000
 ```
 
@@ -277,4 +446,8 @@ first:
 
 ## Known limitations
 
-- Partial close and the long/short position drawing tool are not built yet.
+- Partial close is not built yet.
+- Live mode is paper trading only. Orders are never sent to MT5.
+- The live ForexFactory feed has no actual values, only forecast and previous.
+- Kill zones assume chart times are UTC. That holds for Dukascopy and MT5
+  Live data, but not for a CSV exported in broker time.

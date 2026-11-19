@@ -120,6 +120,30 @@ export interface StepResponse extends SessionState {
   end_of_data: boolean;
 }
 
+export interface LiveSyncResponse extends SessionState {
+  display_tf: Timeframe;
+  candles: Candle[];
+  events: StepEvent[];
+  live: { ok: boolean; busy?: boolean; error: string | null };
+}
+
+export interface LiveStatus {
+  bridge: boolean;
+  connected: boolean;
+  url?: string;
+  error?: string;
+  terminal?: string | null;
+  account?: { login: number; server: string; mode: string; currency: string; company: string } | null;
+  clock?: { mode: string; utc_offset_hours: number; source: string };
+}
+
+export interface LiveSymbol {
+  name: string;
+  description: string;
+  path: string;
+  visible: boolean;
+}
+
 export interface StatsResponse {
   total_trades: number;
   win_rate: number;
@@ -185,8 +209,18 @@ export interface NewsEvent {
   released: boolean;
 }
 
+export interface NewsFeedStatus {
+  url: string;
+  fetched_at: string | null;
+  fetching: boolean;
+  error: string | null;
+  events: number;
+  min_interval_s: number;
+}
+
 export interface NewsResponse {
   loaded: boolean;
+  feed?: NewsFeedStatus | null;
   symbol_currencies: string[];
   events: NewsEvent[];
 }

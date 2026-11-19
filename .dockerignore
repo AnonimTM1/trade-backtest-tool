@@ -7,3 +7,4 @@ frontend/dist
 **/*.tsbuildinfo
 .git
 docs
+mt5bridge

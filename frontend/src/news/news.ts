@@ -1,7 +1,7 @@
 import { registerIndicator, type Chart } from "klinecharts";
 import { api } from "../api";
 import type { ChartController } from "../chart/chart";
-import type { NewsEvent, NewsImpact } from "../types";
+import type { NewsEvent, NewsFeedStatus, NewsImpact } from "../types";
 import { escapeHtml, fmtTime, prefs } from "../util";
 
 /**
@@ -28,6 +28,7 @@ export const IMPACT_COLORS: Record<NewsImpact, string> = {
 const IMPACT_RANK: Record<NewsImpact, number> = { High: 3, Medium: 2, Low: 1, "Non-Economic": 0 };
 
 const DAY = 86_400_000;
+const FEED_REFRESH_MS = 30 * 60_000;
 const LOOKAHEAD = 14 * DAY;
 
 interface DrawState {
@@ -199,6 +200,8 @@ export class NewsController {
   private lastTabRender = 0;
   private tabTimer: number | null = null;
   private indicatorId: string | null = null;
+  private feed: NewsFeedStatus | null = null;
+  private feedTimer: number | null = null;
 
   impacts: Set<NewsImpact> = new Set(prefs.get<NewsImpact[]>("newsImpacts", ["High", "Medium"]));
   allCurrencies = prefs.get<boolean>("newsAllCcy", false);
@@ -233,14 +236,41 @@ export class NewsController {
     if (this.indicatorId) this.chart.instance.overrideIndicator({ name: "NEWS", id: this.indicatorId, extendData: state.version } as any);
   }
 
-  async setSession(sessionId: string, cursorMs: number) {
+  async setSession(sessionId: string, cursorMs: number, live = false) {
     this.sessionId = sessionId;
     this.cursorMs = cursorMs;
     this.events = [];
     this.window = null;
+    this.feed = null;
+    if (this.feedTimer !== null) window.clearInterval(this.feedTimer);
+    this.feedTimer = null;
     this._ensureIndicator();
     this._redrawChart();
+    if (live) {
+      // Live chart: pull this week's ForexFactory calendar on entry, then every 30 min.
+      void this._pullFeed(sessionId, true);
+      this.feedTimer = window.setInterval(() => void this._pullFeed(sessionId, false), FEED_REFRESH_MS);
+    }
     await this.refetch();
+  }
+
+  private async _pullFeed(sid: string, force: boolean) {
+    try {
+      const st = await api.refreshNewsFeed(force);
+      if (sid !== this.sessionId) return;
+      this.feed = st;
+      if (!st.started && !st.fetching) return;
+      // the fetch runs in the background on the server: pick the result up when it's done
+      for (let i = 0; i < 20 && sid === this.sessionId; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const now = await api.refreshNewsFeed(false);
+        this.feed = now;
+        if (!now.fetching) break;
+      }
+      if (sid === this.sessionId) await this.refetch();
+    } catch {
+      /* the CSV calendar still works */
+    }
   }
 
   /** Window covers the loaded chart history and two weeks ahead of the cursor. */
@@ -265,6 +295,7 @@ export class NewsController {
         this.events = res.events;
         this.symbolCurrencies = res.symbol_currencies;
         this.loaded = res.loaded;
+        if (res.feed) this.feed = res.feed;
         this.window = win;
         this._redrawChart();
         this.renderTab(true);
@@ -396,6 +427,13 @@ export class NewsController {
     this.renderTab(true);
   }
 
+  private _feedLine(f: NewsFeedStatus): string {
+    const when = f.fetched_at ? `updated ${fmtTime(f.fetched_at)} UTC` : f.fetching ? "fetching…" : "not fetched yet";
+    const err = f.error ? ` · <span class="pnl-neg">${escapeHtml(f.error)}</span>` : "";
+    return `<div class="news-feed muted">Live calendar: this week from ForexFactory · ${when}${f.fetching ? " · refreshing…" : ""}${err}
+      · <span title="The ForexFactory weekly feed only has forecast and previous values">actual values aren't in the live feed</span></div>`;
+  }
+
   /** Throttled: during fast playback the list re-renders at most 4x/s. */
   renderTab(force = false) {
     if (!this.tabEl) return;
@@ -414,6 +452,7 @@ export class NewsController {
       const ccyLabel = this.allCurrencies ? "all currencies" : [...this.symbolCurrencies, "ALL"].join(", ");
       this.ccyLabelEl.textContent = `${ccyLabel} · times UTC`;
     }
+    const feedLine = this.feed ? this._feedLine(this.feed) : "";
     let body: string;
     if (!this.loaded) {
       body = `<div class="empty-hint">No calendar loaded. Put <code>forexfactory_news.csv</code> in <code>data/news/</code> or upload it from Import data…</div>`;
@@ -451,7 +490,7 @@ export class NewsController {
     }
     const wrap = this.tabEl.parentElement; // .tab-content is the scroll container
     const scroll = wrap ? wrap.scrollTop : 0;
-    el2.innerHTML = body;
+    el2.innerHTML = feedLine + body;
     if (wrap) wrap.scrollTop = scroll;
   }
 }

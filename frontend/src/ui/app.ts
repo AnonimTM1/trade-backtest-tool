@@ -1,7 +1,9 @@
+import { ANALYSIS_TOOLS, AnalysisController } from "../analysis/analysis";
 import { api } from "../api";
 import { ChartController, INDICATORS } from "../chart/chart";
 import { DRAWING_TOOLS, DrawingsController } from "../drawings/drawings";
 import { ICONS } from "../drawings/icons";
+import { LiveController } from "../live/live";
 import { NewsController, relTime } from "../news/news";
 import { ReplayController, SPEEDS, type StepResolution } from "../replay/replay";
 import { TradingPanel } from "../trading/trading";
@@ -15,9 +17,11 @@ export class App {
   private root: HTMLElement;
   private chart!: ChartController;
   private replay: ReplayController | null = null;
+  private live: LiveController | null = null;
   private trading: TradingPanel | null = null;
   private drawings: DrawingsController | null = null;
   private news!: NewsController;
+  private analysis!: AnalysisController;
   private session: SessionInfo | null = null;
   private symbolCfg: SymbolConfig | null = null;
   private activeTab: Tab = "positions";
@@ -37,7 +41,9 @@ export class App {
     this.drawings.onToolChanged = (name) => this._markActiveTool(name);
     this.drawings.onUseAsOrder = (o) => this.trading?.fillTicket(o);
     this.drawings.attachStyleBar(this.root.querySelector(".chart-area") as HTMLElement);
+    this.analysis = new AnalysisController(this.chart);
     this._buildDrawingToolbar();
+    this.analysis.restore();
     this.news = new NewsController(this.chart, {
       onPauseForNews: (ev) => toast(`Paused before ${ev.currency} ${ev.event} (${relTime(ev.timestamp - naiveToMs(this.session!.cursor_time))})`),
     });
@@ -134,6 +140,22 @@ export class App {
     }
     sep();
 
+    // ICT analysis: click toggles, right-click opens the settings
+    const an = this.analysis;
+    const paintAnalysis = () =>
+      toolbar.querySelectorAll<HTMLElement>("[data-analysis]").forEach((b) => b.classList.toggle("toggled", an.isOn(b.dataset.analysis!)));
+    for (const t of ANALYSIS_TOOLS) {
+      const b = button(ICONS[t.icon], `${t.label} — click to show/hide, right-click for settings`, () => an.toggle(t.name));
+      b.dataset.analysis = t.name;
+      b.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        an.openSettings(t.name);
+      });
+    }
+    an.onChange = paintAnalysis;
+    paintAnalysis();
+    sep();
+
     const d = this.drawings!;
     const magnetModes = ["normal", "weak_magnet", "strong_magnet"] as const;
     const magnetTitles = { normal: "Magnet: off", weak_magnet: "Magnet: weak (snap near OHLC)", strong_magnet: "Magnet: strong (always snap to OHLC)" };
@@ -209,6 +231,17 @@ export class App {
           <div class="field"><label>Starting balance</label><input type="number" value="10000" min="1" data-r="balance" /></div>
           <div class="field"><label>Session name</label><input type="text" value="Session" data-r="name" /></div>
         </div>
+        <div class="divider"></div>
+        <div style="display:flex;align-items:center;gap:8px"><strong>Live (MetaTrader 5)</strong>
+          <span class="live-pill" data-r="livepill">checking…</span></div>
+        <div class="empty-hint" style="text-align:left;padding:0" data-r="livehint">
+          Real-time MT5 prices with paper trading: orders are simulated here, nothing is sent to your MT5 account.
+        </div>
+        <div class="field-row" data-r="liveform" style="display:none">
+          <div class="field sym-picker"><label>MT5 symbol</label><input type="text" data-r="livesymbol" placeholder="Search: XAUUSD, EUR, gold…" autocomplete="off" /><div class="sym-list" data-r="livelist" style="display:none"></div></div>
+          <div class="field"><label>Starting balance</label><input type="number" value="10000" min="1" data-r="livebalance" /></div>
+          <div class="field" style="justify-content:flex-end"><label>&nbsp;</label><button class="btn btn-buy" data-r="livestart">Start Live</button></div>
+        </div>
         <div class="actions">
           ${this.session ? `<button class="btn" data-r="cancel">Cancel</button>` : ""}
           <button class="btn" data-r="settings" ${withData.length ? "" : "disabled"}>Symbol settings…</button>
@@ -249,8 +282,9 @@ export class App {
       sessionListEl.innerHTML = sessions
         .map((s) => {
           const pnl = s.equity - s.starting_balance;
+          const isLive = s.symbol.startsWith("MT5:");
           return `<div class="session-row">
-          <span><strong>${escapeHtml(s.name)}</strong> · ${escapeHtml(s.symbol)} · ${fmtTime(s.cursor_time)}
+          <span>${isLive ? `<span class="live-badge sm">LIVE</span> ` : ""}<strong>${escapeHtml(s.name)}</strong> · ${escapeHtml(isLive ? s.symbol.slice(4) : s.symbol)} · ${fmtTime(s.cursor_time)}
             <span class="${pnl >= 0 ? "pnl-pos" : "pnl-neg"}">${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}</span></span>
           <span>
             <button class="btn" data-resume="${s.id}">Resume</button>
@@ -287,6 +321,8 @@ export class App {
       await openImportModal(() => this._openSessionPicker());
     });
 
+    void this._wireLivePicker(backdrop, close);
+
     q("create").addEventListener("click", async () => {
       const symbol = symbolSel.value;
       const startRaw = startInput.value;
@@ -299,6 +335,116 @@ export class App {
       try {
         const session = await api.createSession(symbol, startRaw, balance, name);
         prefs.set("lastSymbol", symbol);
+        close();
+        await this._loadSession(session);
+      } catch (e) {
+        alert((e as Error).message);
+      }
+    });
+  }
+
+  private async _wireLivePicker(backdrop: HTMLElement, close: () => void) {
+    const q = <T extends HTMLElement>(r: string) => backdrop.querySelector(`[data-r="${r}"]`) as T;
+    const pill = q("livepill");
+    const hint = q("livehint");
+    let st;
+    try {
+      st = await api.liveStatus();
+    } catch (e) {
+      st = { bridge: false, connected: false, error: (e as Error).message };
+    }
+    if (!st.bridge || !st.connected) {
+      pill.textContent = st.bridge ? "MT5 not connected" : "bridge offline";
+      pill.className = "live-pill off";
+      hint.innerHTML = `${escapeHtml(st.error ?? "MT5 is not connected.")}<br>
+        Open MetaTrader 5 and log in, then double-click <code>start-mt5-bridge.bat</code> in the project folder and reopen this dialog.`;
+      return;
+    }
+    const acc = st.account;
+    pill.textContent = acc ? `${acc.mode.toUpperCase()} · ${acc.server}` : "connected";
+    pill.className = `live-pill ${acc?.mode === "real" ? "real" : "on"}`;
+    q("liveform").style.display = "";
+    const input = q<HTMLInputElement>("livesymbol");
+    input.value = prefs.get<string>("lastLiveSymbol", "");
+    const list = q("livelist");
+    let all: { name: string; description: string; visible: boolean; path: string }[] = [];
+    let typed = false; // until the user types, show everything (not just matches of the prefilled value)
+    const render = () => {
+      const term = typed ? input.value.trim().toLowerCase() : "";
+      if (!all.length) {
+        list.innerHTML = `<div class="sym-empty">Loading symbols from MT5…</div>`;
+        return;
+      }
+      const match = term
+        ? all.filter((s) => s.name.toLowerCase().includes(term) || s.description.toLowerCase().includes(term))
+        : all;
+      // exact/prefix matches first, then Market Watch, then the rest
+      const rank = (s: (typeof all)[number]) =>
+        (term && s.name.toLowerCase() === term ? 0 : term && s.name.toLowerCase().startsWith(term) ? 1 : 2) * 2 + (s.visible ? 0 : 1);
+      const shown = match.slice().sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)).slice(0, 300);
+      const mw = all.filter((s) => s.visible).length;
+      list.innerHTML = shown.length
+        ? `<div class="sym-empty">${term ? `${match.length} match${match.length === 1 ? "" : "es"}` : `${mw} in Market Watch · ${all.length} total — type to search`}</div>` +
+          shown
+            .map(
+              (s) => `<div class="sym-item" data-sym="${escapeHtml(s.name)}"><b>${escapeHtml(s.name)}</b><span>${escapeHtml(s.description)}</span>${
+                s.visible ? `<i>MW</i>` : ""
+              }</div>`
+            )
+            .join("")
+        : `<div class="sym-empty">No symbol matches “${escapeHtml(input.value)}”</div>`;
+    };
+    const open = () => {
+      list.style.display = "";
+      // open upwards when there isn't room below the input
+      const r = input.getBoundingClientRect();
+      const up = window.innerHeight - r.bottom < 320 && r.top > window.innerHeight - r.bottom;
+      list.style.top = up ? "auto" : "";
+      list.style.bottom = up ? "calc(100% - 18px)" : "";
+      render();
+    };
+    input.addEventListener("focus", () => {
+      typed = false;
+      open();
+      input.select();
+    });
+    input.addEventListener("input", () => {
+      typed = true;
+      open();
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const first = list.querySelector<HTMLElement>("[data-sym]");
+        if (first && typed) input.value = first.dataset.sym!;
+        list.style.display = "none";
+      } else if (e.key === "Escape") list.style.display = "none";
+    });
+    list.addEventListener("mousedown", (e) => {
+      const item = (e.target as HTMLElement).closest<HTMLElement>("[data-sym]");
+      if (!item) return;
+      e.preventDefault();
+      input.value = item.dataset.sym!;
+      typed = false;
+      list.style.display = "none";
+    });
+    input.addEventListener("blur", () => setTimeout(() => (list.style.display = "none"), 150));
+    api
+      .liveSymbols()
+      .then(({ symbols }) => {
+        all = symbols;
+        if (!input.value) input.value = symbols.find((s) => s.visible)?.name ?? "";
+        if (list.style.display !== "none") render();
+      })
+      .catch((e) => {
+        list.innerHTML = `<div class="sym-empty">Could not load the symbol list (${escapeHtml((e as Error).message)}). You can still type a symbol name.</div>`;
+      });
+    q("livestart").addEventListener("click", async () => {
+      const symbol = input.value.trim();
+      if (!symbol) return alert("Enter an MT5 symbol");
+      const balance = parseFloat(q<HTMLInputElement>("livebalance").value) || 10000;
+      try {
+        const session = await api.createLiveSession(symbol, balance, `Live ${symbol}`);
+        prefs.set("lastLiveSymbol", symbol);
         close();
         await this._loadSession(session);
       } catch (e) {
@@ -355,22 +501,48 @@ export class App {
 
   private async _loadSession(session: SessionInfo) {
     this.replay?.pause();
+    this.live?.stop();
+    this.live = null;
     this.trading?.destroy();
     this.session = session;
-    this.symbolCfg = (await api.listSymbols()).find((s) => s.name === session.symbol) ?? null;
+    this.symbolCfg = await api.symbolConfig(session.symbol).catch(() => null);
     if (!this.symbolCfg) throw new Error("Symbol config missing");
+    const isLive = session.symbol.startsWith("MT5:");
 
     const tf = prefs.get<Timeframe>("tf", "M1");
     this.chart.setFetcher(async (t, opts) => {
       if (!this.session) return [];
-      const resp = await api.sessionBars(this.session.id, t, opts.limit, opts.before);
-      return resp.candles;
+      // the first request for a symbol/timeframe can make MT5 download history from the broker
+      const slow = isLive ? setTimeout(() => toast(`Loading ${t} history from MetaTrader 5…`), 1500) : 0;
+      try {
+        const resp = await api.sessionBars(this.session.id, t, opts.limit, opts.before);
+        return resp.candles;
+      } catch (e) {
+        toast(`Could not load ${t} bars: ${(e as Error).message}`, true);
+        throw e;
+      } finally {
+        clearTimeout(slow);
+      }
     });
     await this.chart.loadSymbol(session.symbol, TIMEFRAMES.includes(tf) ? tf : "M1", decimalsOf(this.symbolCfg.point_size));
 
     this.trading = new TradingPanel(this.els.orders, session, this.symbolCfg, this.chart, () => this._queueRefresh(true));
 
-    this.replay = new ReplayController(session, this.chart, {
+    if (isLive) {
+      this.replay = null;
+      this.live = new LiveController(session, this.chart, {
+        onState: (state) => this._applyState(state),
+        onEvents: () => {
+          void this._refreshHistory();
+          void this._refreshStats();
+        },
+        onStatus: (status, error) => this._setLiveStatus(status, error),
+        onGone: () => {
+          toast("This live session was deleted", true);
+          void this._openSessionPicker();
+        },
+      });
+    } else this.replay = new ReplayController(session, this.chart, {
       onState: (state) => this._applyState(state),
       onEvents: () => {
         // trades closed / orders filled: history & stats changed
@@ -384,13 +556,15 @@ export class App {
         if (btn) btn.textContent = playing ? "⏸" : "▶";
       },
     });
-    this.replay.stopAt = () => this.news.stopBefore();
-    this.replay.onStopReached = () => {
-      const ev = this.news.nextHigh();
-      if (ev) this.news.notifyPausedAt(ev);
-    };
-    this.replay.setSpeedIndex(prefs.get<number>("speedIdx", 3));
-    this.replay.stepRes = prefs.get<StepResolution>("stepRes", "auto");
+    if (this.replay) {
+      this.replay.stopAt = () => this.news.stopBefore();
+      this.replay.onStopReached = () => {
+        const ev = this.news.nextHigh();
+        if (ev) this.news.notifyPausedAt(ev);
+      };
+      this.replay.setSpeedIndex(prefs.get<number>("speedIdx", 3));
+      this.replay.stepRes = prefs.get<StepResolution>("stepRes", "auto");
+    }
 
     for (const def of INDICATORS) this.chart.toggleIndicator(def, false);
     for (const name of prefs.get<string[]>("indicators", [])) {
@@ -400,7 +574,7 @@ export class App {
 
     await this.drawings!.loadForSymbol(session.symbol);
     this._buildTopbar();
-    void this.news.setSession(session.id, naiveToMs(session.cursor_time));
+    void this.news.setSession(session.id, naiveToMs(session.cursor_time), isLive);
     this._setTab(this.activeTab);
     await this._refreshState();
     try {
@@ -410,10 +584,28 @@ export class App {
     } catch {
       /* markers are cosmetic */
     }
+    this.live?.start();
+  }
+
+  private _setLiveStatus(status: "ok" | "busy" | "down", error: string | null) {
+    const el = this.els.topbar.querySelector('[data-r="livestatus"]') as HTMLElement | null;
+    if (el) {
+      el.textContent = status === "ok" ? "connected" : status === "busy" ? "MT5 busy…" : "disconnected";
+      el.className = `live-pill ${status === "ok" ? "on" : status === "busy" ? "busy" : "off"}`;
+      el.title =
+        status === "ok"
+          ? "Receiving real-time prices from MetaTrader 5"
+          : status === "busy"
+            ? `MetaTrader 5 is slow to answer (usually while it downloads history). Showing the last known price. ${error ?? ""}`
+            : error ?? "No connection to MetaTrader 5";
+    }
+    if (status === "down" && error) toast(`MT5: ${error}`, true);
   }
 
   private _buildTopbar() {
-    if (!this.session || !this.symbolCfg || !this.replay) return;
+    if (!this.session || !this.symbolCfg) return;
+    if (this.live) return this._buildLiveTopbar();
+    if (!this.replay) return;
     const replay = this.replay;
     const topbar = this.els.topbar;
     const stepOptions = [`<option value="auto">Step: chart TF</option>`]
@@ -447,15 +639,6 @@ export class App {
       <span data-r="sessionname">${escapeHtml(this.session.name)}</span>
     `;
     const q = <T extends HTMLElement>(r: string) => topbar.querySelector(`[data-r="${r}"]`) as T;
-    const tfgroup = q("tfgroup");
-    tfgroup.innerHTML = TIMEFRAMES.map(
-      (tf) => `<button class="btn ${tf === this.chart.timeframe ? "active" : ""}" data-tf="${tf}">${tf}</button>`
-    ).join("");
-    tfgroup.querySelectorAll<HTMLButtonElement>("[data-tf]").forEach((btn) => {
-      btn.addEventListener("click", () => void this._setTimeframe(btn.dataset.tf as Timeframe));
-    });
-
-    q("sessions").addEventListener("click", () => void this._openSessionPicker());
     q("playpause").addEventListener("click", () => replay.toggle());
     q("stepback").addEventListener("click", () => void replay.stepBack(1));
     q("stepfwd").addEventListener("click", () => void replay.stepForward(1));
@@ -471,6 +654,62 @@ export class App {
       prefs.set("stepRes", replay.stepRes);
       this._updateSpeedInfo();
     });
+
+    this._wireCommonTopbar();
+
+    const jumpInput = q<HTMLInputElement>("jumpinput");
+    if (this.symbolCfg.first_bar) jumpInput.min = this.symbolCfg.first_bar.slice(0, 16);
+    if (this.symbolCfg.last_bar) jumpInput.max = this.symbolCfg.last_bar.slice(0, 16);
+    q("jumpbtn").addEventListener("click", () => void this._doJump());
+    jumpInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void this._doJump();
+    });
+
+    this._setCursorDisplay(this.session.cursor_time);
+    this._updateSpeedInfo();
+  }
+
+  /** Top bar for a live (MT5) session: no replay controls. */
+  private _buildLiveTopbar() {
+    const session = this.session!;
+    const topbar = this.els.topbar;
+    topbar.innerHTML = `
+      <button class="btn" data-r="sessions" title="Sessions">☰</button>
+      <span class="live-badge" title="Real-time MetaTrader 5 prices">● LIVE</span>
+      <strong data-r="symbolname">${escapeHtml(session.symbol.slice(4))}</strong>
+      <div class="tf-group" data-r="tfgroup"></div>
+      <div class="sep"></div>
+      <span class="live-pill" data-r="livestatus">connecting…</span>
+      <span class="paper-badge" title="Orders are simulated in this app; nothing is sent to your MT5 account">PAPER TRADING</span>
+      <span class="cursor-time" data-r="cursor">-</span>
+      <div class="sep"></div>
+      <div class="dropdown" data-r="indmenu">
+        <button class="btn" data-r="indbtn">ƒx Indicators</button>
+        <div class="dropdown-menu">${INDICATORS.map(
+          (d) => `<label><input type="checkbox" data-ind="${d.name}" ${this.chart.hasIndicator(d.name) ? "checked" : ""}/> ${d.label}</label>`
+        ).join("")}</div>
+      </div>
+      <button class="btn icon" data-r="symsettings" title="Symbol settings">⚙</button>
+      <div class="grow"></div>
+      <span class="news-chip" data-r="newschip" style="display:none"></span>
+      <span data-r="sessionname">${escapeHtml(session.name)}</span>
+    `;
+    this._wireCommonTopbar();
+    this._setCursorDisplay(session.cursor_time);
+  }
+
+  /** Wiring shared by the replay and live top bars. */
+  private _wireCommonTopbar() {
+    const topbar = this.els.topbar;
+    const q = <T extends HTMLElement>(r: string) => topbar.querySelector(`[data-r="${r}"]`) as T;
+    const tfgroup = q("tfgroup");
+    tfgroup.innerHTML = TIMEFRAMES.map(
+      (tf) => `<button class="btn ${tf === this.chart.timeframe ? "active" : ""}" data-tf="${tf}">${tf}</button>`
+    ).join("");
+    tfgroup.querySelectorAll<HTMLButtonElement>("[data-tf]").forEach((btn) => {
+      btn.addEventListener("click", () => void this._setTimeframe(btn.dataset.tf as Timeframe));
+    });
+    q("sessions").addEventListener("click", () => void this._openSessionPicker());
 
     const indMenu = q("indmenu");
     q("indbtn").addEventListener("click", (e) => {
@@ -491,27 +730,17 @@ export class App {
     );
     q("symsettings").addEventListener("click", () => this.symbolCfg && this._openSymbolSettings(this.symbolCfg));
 
-    const jumpInput = q<HTMLInputElement>("jumpinput");
-    if (this.symbolCfg.first_bar) jumpInput.min = this.symbolCfg.first_bar.slice(0, 16);
-    if (this.symbolCfg.last_bar) jumpInput.max = this.symbolCfg.last_bar.slice(0, 16);
-    q("jumpbtn").addEventListener("click", () => void this._doJump());
-    jumpInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") void this._doJump();
-    });
-
     const chip = q("newschip");
     chip.addEventListener("click", () => this._setTab("news"));
     this.news.attachChip(chip);
-
-    this._setCursorDisplay(this.session.cursor_time);
-    this._updateSpeedInfo();
   }
 
   private async _setTimeframe(tf: Timeframe) {
-    if (!this.replay || tf === this.chart.timeframe) return;
+    const driver = this.replay ?? this.live;
+    if (!driver || tf === this.chart.timeframe) return;
     this.els.topbar.querySelectorAll<HTMLButtonElement>("[data-tf]").forEach((b) => b.classList.toggle("active", b.dataset.tf === tf));
     prefs.set("tf", tf);
-    await this.replay.setTimeframe(tf);
+    await driver.setTimeframe(tf);
     this._updateSpeedInfo();
   }
 
@@ -606,8 +835,8 @@ export class App {
       const target = e.target as HTMLElement;
       if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
       if (document.querySelector(".modal-backdrop")) return;
+      if (!this.session) return;
       const replay = this.replay;
-      if (!replay) return;
       const key = e.key.toLowerCase();
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
         const tool = DRAWING_TOOLS.find((t) => t.hotkey && t.hotkey.toLowerCase() === key);
@@ -617,13 +846,13 @@ export class App {
           return;
         }
       }
-      if (e.shiftKey && e.key === "ArrowRight") {
+      if (replay && e.shiftKey && e.key === "ArrowRight") {
         e.preventDefault();
         void replay.stepForward(1);
-      } else if (e.shiftKey && e.key === "ArrowLeft") {
+      } else if (replay && e.shiftKey && e.key === "ArrowLeft") {
         e.preventDefault();
         void replay.stepBack(1);
-      } else if (e.key === " ") {
+      } else if (replay && e.key === " ") {
         e.preventDefault();
         replay.toggle();
       } else if (e.altKey && key === "b") {
@@ -637,9 +866,9 @@ export class App {
         void this.trading?.closeAll();
       } else if (!e.altKey && !e.ctrlKey && !e.metaKey && e.key >= "1" && e.key <= "7") {
         void this._setTimeframe(TIMEFRAMES[parseInt(e.key, 10) - 1]);
-      } else if (e.key === "+" || e.key === "=") {
+      } else if (replay && (e.key === "+" || e.key === "=")) {
         this._setSpeed(replay.speedIndex + 1);
-      } else if (e.key === "-" || e.key === "_") {
+      } else if (replay && (e.key === "-" || e.key === "_")) {
         this._setSpeed(replay.speedIndex - 1);
       } else if (e.key === "Escape") {
         this.drawings?.cancelDrawing();

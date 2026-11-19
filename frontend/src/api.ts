@@ -1,6 +1,9 @@
 import type {
   Candle,
   DownloadJob,
+  LiveStatus,
+  LiveSymbol,
+  LiveSyncResponse,
   DrawingRecord,
   NewsResponse,
   OrderType,
@@ -41,7 +44,8 @@ async function req<T>(path: string, options: RequestInit = {}): Promise<T> {
 export const api = {
   listSymbols: () => req<SymbolConfig[]>("/symbols"),
   updateSymbolConfig: (symbol: string, patch: Partial<SymbolConfig>) =>
-    req<SymbolConfig>(`/symbols/${symbol}`, { method: "PUT", body: JSON.stringify(patch) }),
+    req<SymbolConfig>(`/symbols/${encodeURIComponent(symbol)}`, { method: "PUT", body: JSON.stringify(patch) }),
+  symbolConfig: (symbol: string) => req<SymbolConfig>(`/symbols/${encodeURIComponent(symbol)}/config`),
   listRawFiles: () => req<{ files: string[] }>("/import/raw"),
   importRawFile: (filename: string, symbol?: string) =>
     req(`/import/raw/${encodeURIComponent(filename)}${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`, {
@@ -138,6 +142,8 @@ export const api = {
     if (currencies) params.set("currencies", currencies);
     return req<NewsResponse>(`/sessions/${id}/news?${params}`);
   },
+  refreshNewsFeed: (force = false) =>
+    req<{ started: boolean } & import("./types").NewsFeedStatus>(`/news/feed/refresh${force ? "?force=true" : ""}`, { method: "POST" }),
   newsStatus: () => req<{ loaded: boolean; count: number; first: string | null; last: string | null; source_timezone: string }>("/news/status"),
   uploadNews: async (file: File) => {
     const form = new FormData();
@@ -150,10 +156,17 @@ export const api = {
     return res.json() as Promise<{ ok: boolean; count: number }>;
   },
 
-  listDrawings: (symbol: string) => req<DrawingRecord[]>(`/symbols/${symbol}/drawings`),
+  listDrawings: (symbol: string) => req<DrawingRecord[]>(`/symbols/${encodeURIComponent(symbol)}/drawings`),
   saveDrawing: (symbol: string, drawing: Partial<DrawingRecord>) =>
-    req<DrawingRecord>(`/symbols/${symbol}/drawings`, { method: "POST", body: JSON.stringify(drawing) }),
+    req<DrawingRecord>(`/symbols/${encodeURIComponent(symbol)}/drawings`, { method: "POST", body: JSON.stringify(drawing) }),
   deleteDrawing: (symbol: string, id: string) =>
-    req(`/symbols/${symbol}/drawings/${id}`, { method: "DELETE" }),
-  deleteAllDrawings: (symbol: string) => req(`/symbols/${symbol}/drawings`, { method: "DELETE" }),
+    req(`/symbols/${encodeURIComponent(symbol)}/drawings/${id}`, { method: "DELETE" }),
+  deleteAllDrawings: (symbol: string) => req(`/symbols/${encodeURIComponent(symbol)}/drawings`, { method: "DELETE" }),
+
+  liveStatus: () => req<LiveStatus>("/live/status"),
+  liveSymbols: () => req<{ symbols: LiveSymbol[] }>("/live/symbols"),
+  createLiveSession: (symbol: string, starting_balance: number, name: string) =>
+    req<SessionInfo>("/live/sessions", { method: "POST", body: JSON.stringify({ symbol, starting_balance, name }) }),
+  liveSync: (id: string, displayTf: Timeframe, bars = 2) =>
+    req<LiveSyncResponse>(`/sessions/${id}/live/sync`, { method: "POST", body: JSON.stringify({ display_tf: displayTf, bars }) }),
 };

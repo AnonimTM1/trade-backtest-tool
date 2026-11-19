@@ -5,4 +5,7 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+    environment:
+      # Live mode: the read-only MT5 bridge running on the Windows host (start-mt5-bridge.bat)
+      - MT5_BRIDGE_URL=http://host.docker.internal:8765
     restart: unless-stopped

@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from app.config import TIMEFRAMES
-from app.data import parquet_store, resample
+from app.data import mt5_client, parquet_store, resample
 from app.db.models import PendingOrder as OrderRow
 from app.db.models import Position as PositionRow
 from app.db.models import ReplaySession
@@ -53,12 +53,23 @@ def validate_tf(tf: str) -> str:
 
 
 def get_or_create_symbol_config(db: DbSession, symbol: str) -> SymbolConfig:
-    symbol = symbol.upper()
+    live = mt5_client.is_live(symbol)
+    # broker symbols are case sensitive ("EURUSD.r", "XAUUSDm"): keep live names as-is
+    symbol = mt5_client.PREFIX + mt5_client.broker_symbol(symbol) if live else symbol.upper()
     cfg = db.get(SymbolConfig, symbol)
     if cfg is None:
         point, contract, spread = SYMBOL_PRESETS.get(
-            symbol, (DEFAULT_POINT_SIZE, DEFAULT_CONTRACT_SIZE, DEFAULT_SPREAD_POINTS)
+            mt5_client.broker_symbol(symbol).upper()[:6] if live else symbol,
+            (DEFAULT_POINT_SIZE, DEFAULT_CONTRACT_SIZE, DEFAULT_SPREAD_POINTS),
         )
+        if live:
+            try:  # the broker's own contract spec beats the generic presets
+                info = mt5_client.symbol_info(mt5_client.broker_symbol(symbol))
+                point = float(info["point"]) or point
+                contract = float(info["contract_size"]) or contract
+                spread = float(info["spread"]) or spread
+            except (mt5_client.BridgeUnavailable, mt5_client.BridgeRequestError):
+                pass
         cfg = SymbolConfig(
             name=symbol,
             point_size=point,
@@ -117,7 +128,9 @@ def row_to_bar(ts, row) -> Bar:
 class CursorContext:
     cfg: SymbolConfig
     m1: pd.DataFrame
-    bar: Optional[Bar]  # the M1 bar at/before the cursor
+    bar: Optional[Bar]  # the M1 bar at/before the cursor (live: the current tick)
+    live_error: Optional[str] = None
+    live_busy: bool = False  # MT5 temporarily busy (downloading history), not disconnected
 
     @property
     def spread_points(self) -> float:
@@ -146,8 +159,22 @@ class CursorContext:
         }
 
 
+def live_tick_bar(cfg: SymbolConfig, t: dict) -> Bar:
+    """A zero-range bar at the current tick, so the bar-based engine fills at bid/ask."""
+    spread = max(0.0, (t["ask"] - t["bid"]) / cfg.point_size) if cfg.point_size else None
+    ts = pd.Timestamp(int(t["time_ms"]), unit="ms")
+    return _bar(ts, t["bid"], t["bid"], t["bid"], t["bid"], round(spread, 1) if spread is not None else None)
+
+
 def cursor_context(db: DbSession, session: ReplaySession) -> CursorContext:
     cfg = get_or_create_symbol_config(db, session.symbol)
+    if mt5_client.is_live(session.symbol):
+        try:
+            t = mt5_client.tick(mt5_client.broker_symbol(session.symbol))
+        except (mt5_client.BridgeUnavailable, mt5_client.BridgeRequestError) as e:
+            return CursorContext(cfg=cfg, m1=pd.DataFrame(), bar=None, live_error=str(e), live_busy=mt5_client.is_busy(e))
+        # stale = MT5 is busy and the bridge served the last known quote
+        return CursorContext(cfg=cfg, m1=pd.DataFrame(), bar=live_tick_bar(cfg, t), live_busy=bool(t.get("stale")))
     m1 = parquet_store.load_m1(session.symbol)
     upto = parquet_store.upto(m1, pd.Timestamp(session.cursor_time))
     bar = row_to_bar(upto.index[-1], upto.iloc[-1]) if not upto.empty else None
@@ -265,43 +292,18 @@ def step_forward(db: DbSession, session: ReplaySession, tf: str, n: int) -> dict
 
     future = parquet_store.between(m1, cursor_ts, cutoff)
 
-    open_rows = {row.id: row for row in get_open_positions(db, session.id)}
-    open_positions = {pid: _row_to_engine_position(row) for pid, row in open_rows.items()}
-    order_rows = {row.id: row for row in get_pending_orders(db, session.id)}
-    pending = {oid: _row_to_engine_order(row) for oid, row in order_rows.items()}
-
     events: list[dict] = []
     new_cursor = cursor_ts
-    if not future.empty and (open_positions or pending):
+    if not future.empty:
         spreads = future["spread"].to_numpy(dtype="float64")
-        for ts, o, h, l, c, sp in zip(
-            future.index, future["open"].to_numpy(), future["high"].to_numpy(),
-            future["low"].to_numpy(), future["close"].to_numpy(), spreads,
-        ):
-            bar = _bar(ts, o, h, l, c, sp)
-            # 1) existing positions: SL/TP
-            if open_positions:
-                for trade in trading_engine.process_m1_bar(open_positions, bar, cfg.default_spread_points):
-                    row = _persist_closed_trade(db, session, open_rows.pop(trade.position_id), trade)
-                    events.append({"type": "closed", "trade": row})
-            # 2) pending orders: triggers (new positions are SL/TP-checked from the next bar)
-            if pending:
-                spread_points = pricing.effective_spread_points(bar, cfg.default_spread_points)
-                for oid in list(pending.keys()):
-                    order = pending[oid]
-                    fill = trading_engine.check_pending_trigger(order, bar, spread_points, cfg.point_size)
-                    if fill is None:
-                        continue
-                    pos = trading_engine.fill_pending_order(order, fill, bar.timestamp, cfg.contract_size, cfg.point_size)
-                    pos_row = _persist_position(db, session, pos)
-                    order_row = order_rows.pop(oid)
-                    order_row.status = "filled"
-                    order_row.position_id = pos_row.id
-                    del pending[oid]
-                    open_rows[pos_row.id] = pos_row
-                    open_positions[pos_row.id] = pos
-                    events.append({"type": "filled", "order": order_row, "position": pos_row})
-        db.commit()
+        bars = (
+            _bar(ts, o, h, l, c, sp)
+            for ts, o, h, l, c, sp in zip(
+                future.index, future["open"].to_numpy(), future["high"].to_numpy(),
+                future["low"].to_numpy(), future["close"].to_numpy(), spreads,
+            )
+        )
+        events = process_bars(db, session, cfg, bars)
     if not future.empty:
         new_cursor = future.index[-1]
 
@@ -311,6 +313,128 @@ def step_forward(db: DbSession, session: ReplaySession, tf: str, n: int) -> dict
     db.refresh(session)
 
     return {"events": events, "end_of_data": bool(end_of_data), "previous_cursor": cursor_ts}
+
+
+def process_bars(db: DbSession, session: ReplaySession, cfg: SymbolConfig, bars) -> list[dict]:
+    """Run SL/TP and pending-order triggers over `bars` (oldest first)."""
+    open_rows = {row.id: row for row in get_open_positions(db, session.id)}
+    order_rows = {row.id: row for row in get_pending_orders(db, session.id)}
+    if not open_rows and not order_rows:
+        return []
+    open_positions = {pid: _row_to_engine_position(row) for pid, row in open_rows.items()}
+    pending = {oid: _row_to_engine_order(row) for oid, row in order_rows.items()}
+
+    events: list[dict] = []
+    for bar in bars:
+        if not open_positions and not pending:
+            break
+        # 1) existing positions: SL/TP
+        if open_positions:
+            for trade in trading_engine.process_m1_bar(open_positions, bar, cfg.default_spread_points):
+                row = _persist_closed_trade(db, session, open_rows.pop(trade.position_id), trade)
+                events.append({"type": "closed", "trade": row})
+        # 2) pending orders: triggers (new positions are SL/TP-checked from the next bar)
+        if pending:
+            spread_points = pricing.effective_spread_points(bar, cfg.default_spread_points)
+            for oid in list(pending.keys()):
+                order = pending[oid]
+                fill = trading_engine.check_pending_trigger(order, bar, spread_points, cfg.point_size)
+                if fill is None:
+                    continue
+                pos = trading_engine.fill_pending_order(order, fill, bar.timestamp, cfg.contract_size, cfg.point_size)
+                pos_row = _persist_position(db, session, pos)
+                order_row = order_rows.pop(oid)
+                order_row.status = "filled"
+                order_row.position_id = pos_row.id
+                del pending[oid]
+                open_rows[pos_row.id] = pos_row
+                open_positions[pos_row.id] = pos
+                events.append({"type": "filled", "order": order_row, "position": pos_row})
+    db.commit()
+    return events
+
+
+def ticks_to_bars(ticks: list, point_size: float, bucket_ms: int = 1000) -> list[Bar]:
+    """Group [utc_ms, bid, ask] ticks into 1-second bid bars (spread = widest in the bucket).
+    Each bar is stamped with its last tick's time."""
+    bars: list[Bar] = []
+    cur = None
+    for ms, bid, ask in ticks:
+        key = int(ms) // bucket_ms
+        spread = max(0.0, (ask - bid) / point_size) if point_size else 0.0
+        if cur is None or cur[0] != key:
+            if cur is not None:
+                bars.append(_bar(pd.Timestamp(cur[6], unit="ms"), cur[1], cur[2], cur[3], cur[4], cur[5]))
+            cur = [key, bid, bid, bid, bid, spread, int(ms)]
+        else:
+            cur[2] = max(cur[2], bid)
+            cur[3] = min(cur[3], bid)
+            cur[4] = bid
+            cur[5] = max(cur[5], spread)
+            cur[6] = int(ms)
+    if cur is not None:
+        bars.append(_bar(pd.Timestamp(cur[6], unit="ms"), cur[1], cur[2], cur[3], cur[4], cur[5]))
+    return bars
+
+
+def live_sync(db: DbSession, session: ReplaySession) -> tuple[list[dict], CursorContext]:
+    """Catch a live session up to the current MT5 tick: every tick since the
+    last sync is replayed through SL/TP and pending-order checks, so nothing is
+    missed between polls or while the app was closed (up to 7 days back)."""
+    ctx = cursor_context(db, session)
+    if ctx.bar is None:
+        return [], ctx
+    now_ts = pd.Timestamp(ctx.bar.timestamp)
+    last_ts = pd.Timestamp(session.cursor_time)
+    events: list[dict] = []
+    if now_ts > last_ts and (get_open_positions(db, session.id) or get_pending_orders(db, session.id)):
+        try:
+            ticks = mt5_client.ticks(
+                mt5_client.broker_symbol(session.symbol),
+                int(last_ts.value // 1_000_000), int(now_ts.value // 1_000_000),
+            )
+        except (mt5_client.BridgeUnavailable, mt5_client.BridgeRequestError) as e:
+            # positions are re-checked from the same point on the next poll, so nothing is skipped
+            ctx.live_error = str(e)
+            ctx.live_busy = mt5_client.is_busy(e)
+            return [], ctx
+        bars = ticks_to_bars(ticks, ctx.cfg.point_size) or [ctx.bar]
+        events = process_bars(db, session, ctx.cfg, bars)
+    if now_ts > last_ts:
+        session.cursor_time = now_ts.to_pydatetime()
+        db.commit()
+        db.refresh(session)
+    return events, ctx
+
+
+def create_live_session(db: DbSession, symbol: str, starting_balance: float, name: str) -> ReplaySession:
+    if starting_balance <= 0:
+        raise HTTPException(400, "starting_balance must be positive")
+    broker = mt5_client.broker_symbol(symbol.strip())
+    try:
+        mt5_client.symbol_info(broker)
+        t = mt5_client.tick(broker)
+    except mt5_client.BridgeUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    except mt5_client.BridgeRequestError as e:
+        raise HTTPException(e.status if e.status < 500 else 502, str(e)) from e
+    live_symbol = mt5_client.PREFIX + broker
+    get_or_create_symbol_config(db, live_symbol)
+    now = pd.Timestamp(int(t["time_ms"]), unit="ms").to_pydatetime()
+    session = ReplaySession(
+        name=name, symbol=live_symbol, start_time=now, cursor_time=now,
+        starting_balance=starting_balance, balance=starting_balance,
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def _no_quote(ctx: CursorContext, what: str) -> HTTPException:
+    if ctx.live_error:
+        return HTTPException(503, ctx.live_error)
+    return HTTPException(400, f"No bar data at cursor to {what}")
 
 
 def step_back(db: DbSession, session: ReplaySession, tf: str, n: int) -> None:
@@ -429,7 +553,7 @@ def place_order(
         raise HTTPException(400, "lots must be positive")
     ctx = cursor_context(db, session)
     if ctx.bar is None:
-        raise HTTPException(400, "No bar data at cursor to fill order")
+        raise _no_quote(ctx, "fill order")
 
     if order_type == "market":
         engine_pos = trading_engine.open_market_position(
@@ -546,7 +670,7 @@ def close_position(db: DbSession, session: ReplaySession, position_id: str, ctx:
         raise HTTPException(404, "Open position not found")
     ctx = ctx or cursor_context(db, session)
     if ctx.bar is None:
-        raise HTTPException(400, "No bar data at cursor to close position")
+        raise _no_quote(ctx, "close position")
     engine_pos = _row_to_engine_position(row)
     trade = trading_engine.close_position_manually(engine_pos, ctx.bar, ctx.cfg.default_spread_points)
     return _persist_closed_trade(db, session, row, trade)
